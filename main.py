@@ -114,6 +114,25 @@ def main() -> None:
     app.setApplicationVersion(APP_VERSION)
     app.setOrganizationName("MobileDiagPro")
 
+    # Bloqueio de instância única (Single Instance Lock)
+    from PySide6.QtNetwork import QLocalServer, QLocalSocket
+
+    ipc_server_name = "MobileDiagPro_SingleInstance_IPC"
+    ipc_socket = QLocalSocket()
+    ipc_socket.connectToServer(ipc_server_name)
+    if ipc_socket.waitForConnected(400):
+        # Outra instância já está ativa! Notifica e sai imediatamente.
+        ipc_socket.write(b"ACTIVATE")
+        ipc_socket.waitForBytesWritten(1000)
+        ipc_socket.disconnectFromServer()
+        logger.info("Instância existente detectada. Encerrando processo duplicado.")
+        sys.exit(0)
+
+    # Iniciar servidor IPC local para escutar futuras instâncias
+    ipc_server = QLocalServer()
+    ipc_server.removeServer(ipc_server_name)
+    ipc_server.listen(ipc_server_name)
+
     # Inicializar gerenciador de temas
     theme_mgr = ThemeManager()
     theme_mgr.initialize(args.theme)
@@ -124,15 +143,26 @@ def main() -> None:
     # Criar janela principal
     window = MainWindow()
 
-    # Inicializar as páginas reais
-    dashboard_page = DashboardPage()
-    diagnostic_page = DiagnosticPage()
+    def on_new_instance():
+        client = ipc_server.nextPendingConnection()
+        if client:
+            client.waitForReadyRead(400)
+            window.showNormal()
+            window.raise_()
+            window.activateWindow()
+            client.disconnectFromServer()
+
+    ipc_server.newConnection.connect(on_new_instance)
+
+    # Inicializar as páginas reais como filhas do stacked_widget
+    dashboard_page = DashboardPage(window.stacked_widget)
+    diagnostic_page = DiagnosticPage(window.stacked_widget)
     flash_vm = FlashViewModel()
-    flash_page = FlashPage(flash_vm)
-    monitoring_page = MonitoringPage()
-    adb_shell_page = ADBShellPage()
-    backup_page = BackupPage()
-    settings_page = SettingsPage()
+    flash_page = FlashPage(flash_vm, parent=window.stacked_widget)
+    monitoring_page = MonitoringPage(window.stacked_widget)
+    adb_shell_page = ADBShellPage(window.stacked_widget)
+    backup_page = BackupPage(window.stacked_widget)
+    settings_page = SettingsPage(window.stacked_widget)
 
     # Criar lista de páginas
     pages = [
@@ -158,6 +188,7 @@ def main() -> None:
         # Passar device info / serial para todas as páginas ativas
         dashboard_page.update_device_info(device_info)
         diagnostic_page.set_device(device_info.serial)
+        diagnostic_page.set_device_info(device_info)
         flash_page.set_device(device_info.serial)
         monitoring_page.set_device(device_info.serial)
         adb_shell_page.set_device(device_info.serial)
@@ -168,7 +199,7 @@ def main() -> None:
     def on_device_disconnected():
         window.title_bar.status_indicator.setText("🔴 Desconectado")
         dashboard_page.clear()
-        diagnostic_page.set_device("")
+        diagnostic_page.clear()
         flash_page.set_device("")
         monitoring_page.set_device("")
         adb_shell_page.set_device("")
@@ -177,6 +208,23 @@ def main() -> None:
 
     device_manager.device_connected.connect(on_device_connected)
     device_manager.device_disconnected.connect(on_device_disconnected)
+
+    # Conectar navegação rápida e ações do Dashboard
+    dashboard_page.action_go_to_diagnostic.connect(lambda: window.sidebar._on_button_clicked(1))
+    dashboard_page.action_go_to_flash.connect(lambda: window.sidebar._on_button_clicked(2))
+    dashboard_page.action_open_shell.connect(lambda: window.sidebar._on_button_clicked(4))
+
+    def on_dashboard_reboot():
+        serial = device_manager.current_serial
+        mode = device_manager.current_mode
+        from src.core.constants import DeviceMode
+        import subprocess
+        if mode in (DeviceMode.FASTBOOT, DeviceMode.FASTBOOTD):
+            subprocess.run(["fastboot", "continue"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+        elif serial:
+            device_manager.adb_client.reboot(serial)
+
+    dashboard_page.action_reboot.connect(on_dashboard_reboot)
 
     # Iniciar monitoramento do device manager
     device_manager.start_monitoring()
@@ -196,4 +244,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()

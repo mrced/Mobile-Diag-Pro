@@ -2,9 +2,12 @@
 Motor de Backup e Restauração via ADB.
 """
 import os
+import sys
 import subprocess
 from datetime import datetime
 from PySide6.QtCore import QObject, Signal
+
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 class BackupEngine(QObject):
     """
@@ -31,7 +34,7 @@ class BackupEngine(QObject):
         try:
             cmd = ["adb", "-s", serial, "backup", "-apk", "-shared", "-all", "-f", output_path]
             self.backup_progress.emit(f"Iniciando backup completo: {output_path}")
-            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False, creationflags=_NO_WINDOW)
             if result.returncode == 0:
                 return True, "Backup completo finalizado com sucesso."
             return False, f"Falha no backup: {result.stderr}"
@@ -52,7 +55,7 @@ class BackupEngine(QObject):
         try:
             self.backup_progress.emit("Buscando pacotes no dispositivo...")
             cmd = ["adb", "-s", serial, "shell", "pm", "list", "packages", "-3"]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False, creationflags=_NO_WINDOW)
             if result.returncode != 0:
                 return False, f"Falha ao listar pacotes: {result.stderr}"
                 
@@ -67,12 +70,12 @@ class BackupEngine(QObject):
             for pkg in packages:
                 self.backup_progress.emit(f"Obtendo caminho do pacote {pkg}...")
                 path_cmd = ["adb", "-s", serial, "shell", "pm", "path", pkg]
-                path_res = subprocess.run(path_cmd, capture_output=True, text=True, check=False)
+                path_res = subprocess.run(path_cmd, capture_output=True, text=True, check=False, creationflags=_NO_WINDOW)
                 if path_res.returncode == 0 and path_res.stdout:
                     apk_path = path_res.stdout.strip().replace("package:", "")
                     self.backup_progress.emit(f"Baixando APK: {pkg}...")
                     pull_cmd = ["adb", "-s", serial, "pull", apk_path, os.path.join(output_path, f"{pkg}.apk")]
-                    pull_res = subprocess.run(pull_cmd, capture_output=True, text=True, check=False)
+                    pull_res = subprocess.run(pull_cmd, capture_output=True, text=True, check=False, creationflags=_NO_WINDOW)
                     if pull_res.returncode == 0:
                         success_count += 1
                         
@@ -96,7 +99,7 @@ class BackupEngine(QObject):
             os.makedirs(local_folder, exist_ok=True)
             self.backup_progress.emit(f"Copiando mídias de {remote_folder} para {local_folder}...")
             cmd = ["adb", "-s", serial, "pull", remote_folder, local_folder]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False, creationflags=_NO_WINDOW)
             if result.returncode == 0:
                 return True, f"Mídias copiadas de {remote_folder} com sucesso."
             return False, f"Falha ao copiar mídias: {result.stderr}"
@@ -117,7 +120,7 @@ class BackupEngine(QObject):
         try:
             self.backup_progress.emit(f"Iniciando restauração a partir de: {backup_file_path}")
             cmd = ["adb", "-s", serial, "restore", backup_file_path]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False, creationflags=_NO_WINDOW)
             if result.returncode == 0:
                 return True, "Restauração finalizada com sucesso."
             return False, f"Falha na restauração: {result.stderr}"

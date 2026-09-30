@@ -43,7 +43,9 @@ class SettingsViewModel(QObject):
         Retorna uma mensagem de status.
         """
         try:
-            result = subprocess.run(["adb", "version"], capture_output=True, text=True, check=True)
+            import sys
+            flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            result = subprocess.run(["adb", "version"], capture_output=True, text=True, check=True, creationflags=flags)
             return f"ADB Detectado (Sistema): {result.stdout.splitlines()[0]}"
         except (subprocess.CalledProcessError, FileNotFoundError):
             return "ADB não detectado no sistema."

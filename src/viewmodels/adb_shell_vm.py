@@ -32,6 +32,8 @@ class LogcatThread(QThread):
         cmd.extend(["logcat", "-v", "time"])
 
         try:
+            import sys
+            flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             self._process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -39,7 +41,8 @@ class LogcatThread(QThread):
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                bufsize=1
+                bufsize=1,
+                creationflags=flags
             )
 
             priority_order = {"V": 0, "D": 1, "I": 2, "W": 3, "E": 4, "F": 5}
@@ -144,6 +147,7 @@ class ADBShellViewModel(QObject):
             if self._serial:
                 cmd.extend(["-s", self._serial])
             cmd.extend(["logcat", "-c"])
-            subprocess.run(cmd, capture_output=True)
+            flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            subprocess.run(cmd, capture_output=True, creationflags=flags)
 
         self._executor.submit(_clear)

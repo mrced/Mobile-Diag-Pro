@@ -1,8 +1,11 @@
 import socket
 import struct
 import subprocess
+import sys
 import threading
 from PySide6.QtCore import QObject, Signal
+
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 from src.core.constants import DEFAULT_TIMEOUT
 from src.core.exceptions import ADBConnectionError, ADBTimeoutError, ADBCommandError
@@ -62,7 +65,7 @@ class ADBClient(QObject):
     def start_server(self) -> bool:
         """Inicia o servidor ADB."""
         try:
-            subprocess.run(['adb', 'start-server'], check=True, capture_output=True)
+            subprocess.run(['adb', 'start-server'], check=True, capture_output=True, creationflags=_NO_WINDOW)
             self.connection_established.emit()
             return True
         except subprocess.SubprocessError:
@@ -71,7 +74,7 @@ class ADBClient(QObject):
     def kill_server(self) -> bool:
         """Para o servidor ADB."""
         try:
-            subprocess.run(['adb', 'kill-server'], check=True, capture_output=True)
+            subprocess.run(['adb', 'kill-server'], check=True, capture_output=True, creationflags=_NO_WINDOW)
             self.connection_lost.emit()
             return True
         except subprocess.SubprocessError:
@@ -138,7 +141,7 @@ class ADBClient(QObject):
     def pull_file(self, serial: str, remote_path: str, local_path: str) -> bool:
         """Puxa um arquivo do dispositivo."""
         try:
-            subprocess.run(['adb', '-s', serial, 'pull', remote_path, local_path], check=True, capture_output=True)
+            subprocess.run(['adb', '-s', serial, 'pull', remote_path, local_path], check=True, capture_output=True, creationflags=_NO_WINDOW)
             return True
         except subprocess.SubprocessError:
             return False
@@ -146,7 +149,7 @@ class ADBClient(QObject):
     def push_file(self, serial: str, local_path: str, remote_path: str) -> bool:
         """Envia um arquivo para o dispositivo."""
         try:
-            subprocess.run(['adb', '-s', serial, 'push', local_path, remote_path], check=True, capture_output=True)
+            subprocess.run(['adb', '-s', serial, 'push', local_path, remote_path], check=True, capture_output=True, creationflags=_NO_WINDOW)
             return True
         except subprocess.SubprocessError:
             return False
@@ -157,7 +160,7 @@ class ADBClient(QObject):
             cmd = ['adb', '-s', serial, 'reboot']
             if mode:
                 cmd.append(mode)
-            subprocess.run(cmd, check=True, capture_output=True)
+            subprocess.run(cmd, check=True, capture_output=True, creationflags=_NO_WINDOW)
             return True
         except subprocess.SubprocessError:
             return False

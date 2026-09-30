@@ -172,13 +172,15 @@ class DeviceManager(QObject):
         return state_map.get(state, DeviceMode.UNKNOWN)
 
     def _get_fastboot_devices(self) -> list[str]:
-        """Obtém lista de dispositivos em modo Fastboot."""
         try:
+            import sys
+            creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             result = subprocess.run(
                 ["fastboot", "devices"],
                 capture_output=True,
                 text=True,
                 timeout=3,
+                creationflags=creationflags,
             )
             devices = []
             for line in result.stdout.strip().splitlines():

@@ -3,24 +3,20 @@ from PySide6.QtCore import Qt, Signal
 
 from src.views.widgets.device_card import DeviceCard
 from src.views.widgets.gauge_widget import GaugeWidget
+from src.views.widgets.action_guide_card import ActionGuideCard
 from src.core.theme_manager import ThemeManager
-
-# Assumindo a existência destes modelos
-# from src.models.device import DeviceInfo
-# from src.models.battery import BatteryInfo
-# from src.models.cpu import CPUInfo
-# from src.models.memory import MemoryInfo
-# from src.models.thermal import ThermalInfo
 
 class DashboardPage(QWidget):
     """
-    Página de Dashboard contendo a visão geral do dispositivo.
+    Página de Dashboard contendo a visão geral do dispositivo e guia de prontidão.
     """
     
     action_reboot = Signal()
     action_screenshot = Signal()
     action_screen_record = Signal()
     action_open_shell = Signal()
+    action_go_to_diagnostic = Signal()
+    action_go_to_flash = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -51,8 +47,15 @@ class DashboardPage(QWidget):
         layout.addWidget(subtitle)
         
         # Device Card
-        self.device_card = DeviceCard()
+        self.device_card = DeviceCard(self)
         layout.addWidget(self.device_card)
+        
+        # Guia de Prontidão e Ações para Diagnóstico
+        self.action_guide = ActionGuideCard(self)
+        self.action_guide.action_go_to_diagnostic.connect(self.action_go_to_diagnostic)
+        self.action_guide.action_go_to_flash.connect(self.action_go_to_flash)
+        self.action_guide.action_reboot_system.connect(self.action_reboot)
+        layout.addWidget(self.action_guide)
         
         # Gauges Row
         gauges_layout = QHBoxLayout()
@@ -130,6 +133,7 @@ class DashboardPage(QWidget):
 
     def update_device_info(self, info):
         self.device_card.update_device(info)
+        self.action_guide.update_status(info)
 
     def update_battery(self, info):
         self.gauge_battery.value = getattr(info, 'level', 0.0)
@@ -146,6 +150,7 @@ class DashboardPage(QWidget):
 
     def clear(self):
         self.device_card.clear()
+        self.action_guide.set_disconnected()
         for gauge in self.gauges:
             gauge.value = 0
 

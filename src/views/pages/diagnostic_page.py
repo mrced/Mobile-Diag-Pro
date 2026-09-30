@@ -8,8 +8,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QFont
 
+from src.core.constants import DeviceMode
 from src.viewmodels.diagnostic_vm import DiagnosticViewModel, TestResult, DiagnosticReport
 from src.views.widgets.test_item_widget import TestItemWidget, TestStatus
+from src.views.widgets.action_guide_card import ActionGuideCard
 
 class DiagnosticPage(QWidget):
     """
@@ -73,6 +75,10 @@ class DiagnosticPage(QWidget):
         
         self.header_layout.addLayout(self.stats_layout)
         self.main_layout.addLayout(self.header_layout)
+        
+        # --- Guia de Ações & Prontidão ---
+        self.action_guide = ActionGuideCard(self)
+        self.main_layout.addWidget(self.action_guide)
         
         # --- Controls Section ---
         self.controls_layout = QHBoxLayout()
@@ -212,6 +218,22 @@ class DiagnosticPage(QWidget):
         # ... o resto continua igual ...
     def set_device(self, serial: str):
         self.current_serial = serial
+
+    def set_device_info(self, device_info):
+        self.action_guide.update_status(device_info)
+        mode = getattr(device_info, 'mode', DeviceMode.UNKNOWN)
+        if mode == DeviceMode.ADB_NORMAL:
+            self.btn_run_all.setEnabled(True)
+            self.btn_run_selected.setEnabled(True)
+        else:
+            self.btn_run_all.setEnabled(False)
+            self.btn_run_selected.setEnabled(False)
+
+    def clear(self):
+        self.current_serial = ""
+        self.action_guide.set_disconnected()
+        self.btn_run_all.setEnabled(False)
+        self.btn_run_selected.setEnabled(False)
 
     @Slot()
     def _on_run_all_clicked(self):
