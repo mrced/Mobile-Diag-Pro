@@ -96,64 +96,99 @@ class MonitoringViewModel(QObject):
 
     @Slot(object)
     def _process_telemetry(self, data: dict) -> None:
-        """Processa os dados retornados do worker e emite sinais."""
-        if not self._is_monitoring:
+        """Processa os dados retornados do worker e emite sinais de forma defensiva."""
+        if not self._is_monitoring or not isinstance(data, dict):
             return
-            
-        # CPU
-        cpu_data = data.get('cpu', {})
-        total_cpu = cpu_data.get('total_usage', 0.0)
-        cores = cpu_data.get('cores', {})
-        if not isinstance(cores, dict):
-            cores = {}
-        if not cores:
-            # Fake cores if missing from adb parser
-            cores = {'Core 0': total_cpu}
-        self.cpu_telemetry.emit(total_cpu, cores)
-        
-        # Memory
-        mem_data = data.get('mem', {})
-        total_kb = mem_data.get('MemTotal', 1)
-        free_kb = mem_data.get('MemFree', 0)
-        cached_kb = mem_data.get('Cached', 0)
-        
-        used_mb = max(0, (total_kb - free_kb - cached_kb) / 1024.0)
-        free_mb = free_kb / 1024.0
-        cached_mb = cached_kb / 1024.0
-        self.memory_telemetry.emit(used_mb, free_mb, cached_mb)
-        
-        # Thermal
-        temp_data = data.get('temp', {})
-        zones = temp_data.get('zones', {})
-        cpu_temp = 40.0
-        battery_temp = 35.0
-        gpu_temp = 40.0
-        skin_temp = 30.0
-        
-        for name, value in zones.items():
-            name_lower = name.lower()
-            val = float(value) / 1000.0 if float(value) > 1000 else float(value)
-            
-            if 'cpu' in name_lower or 'tsens' in name_lower:
-                cpu_temp = max(cpu_temp, val)
-            elif 'batt' in name_lower or 'bms' in name_lower:
-                battery_temp = max(battery_temp, val)
-            elif 'gpu' in name_lower:
-                gpu_temp = max(gpu_temp, val)
-            elif 'skin' in name_lower or 'quiet' in name_lower:
-                skin_temp = max(skin_temp, val)
-                
-        thermal_dict = {
-            'CPU': cpu_temp,
-            'Bateria': battery_temp,
-            'GPU': gpu_temp,
-            'Chassi': skin_temp
-        }
-        self.thermal_telemetry.emit(thermal_dict)
-        
-        # Battery
-        bat_data = data.get('bat', {})
-        level = float(bat_data.get('level', 0.0))
-        voltage = int(bat_data.get('voltage', 0))
-        current = int(bat_data.get('current now', 0))
-        self.battery_telemetry.emit(level, voltage, current)
+
+        try:
+            # CPU
+            cpu_data = data.get('cpu', {})
+            total_cpu = float(cpu_data.get('total_usage', 0.0)) if isinstance(cpu_data, dict) else 0.0
+            cores = cpu_data.get('cores', {}) if isinstance(cpu_data, dict) else {}
+            if not isinstance(cores, dict):
+                cores = {}
+            if not cores:
+                cores = {'Core 0': total_cpu}
+            self.cpu_telemetry.emit(total_cpu, cores)
+
+            # Memory
+            mem_data = data.get('mem', {})
+            if isinstance(mem_data, dict):
+                total_bytes = mem_data.get('memtotal', mem_data.get('MemTotal', 0))
+                free_bytes = mem_data.get('memfree', mem_data.get('MemFree', 0))
+                cached_bytes = mem_data.get('cached', mem_data.get('Cached', 0))
+
+                # Se os dados vieram em kB (menores que 100MB quando lidos como bytes)
+                if 0 < total_bytes < 100 * 1024 * 1024:
+                    total_bytes *= 1024
+                    free_bytes *= 1024
+                    cached_bytes *= 1024
+
+                total_mb = total_bytes / (1024.0 * 1024.0)
+                free_mb = free_bytes / (1024.0 * 1024.0)
+                cached_mb = cached_bytes / (1024.0 * 1024.0)
+                used_mb = max(0.0, total_mb - free_mb - cached_mb)
+            else:
+                used_mb, free_mb, cached_mb = 0.0, 0.0, 0.0
+
+            self.memory_telemetry.emit(used_mb, free_mb, cached_mb)
+
+            # Thermal
+            temp_data = data.get('temp', {})
+            zones = temp_data.get('zones', []) if isinstance(temp_data, dict) else []
+            cpu_temp = 38.0
+            battery_temp = 32.0
+            gpu_temp = 38.0
+            skin_temp = 29.0
+
+            zone_items = []
+            if isinstance(zones, dict):
+                zone_items = list(zones.items())
+            elif isinstance(zones, list):
+                for z in zones:
+                    if isinstance(z, dict):
+                        zone_items.append((z.get('name', ''), z.get('temperature', 0)))
+                    elif isinstance(z, (tuple, list)) and len(z) >= 2:
+                        zone_items.append((str(z[0]), z[1]))
+
+            for name, value in zone_items:
+                try:
+                    name_lower = str(name).lower()
+                    val = float(value)
+                    if val > 1000:
+                        val /= 1000.0
+                    elif val <= 0:
+                        continue
+
+                    if 'cpu' in name_lower or 'tsens' in name_lower or 'soc' in name_lower:
+                        cpu_temp = max(cpu_temp, val)
+                    elif 'batt' in name_lower or 'bms' in name_lower:
+                        battery_temp = max(battery_temp, val)
+                    elif 'gpu' in name_lower:
+                        gpu_temp = max(gpu_temp, val)
+                    elif 'skin' in name_lower or 'quiet' in name_lower or 'chassis' in name_lower:
+                        skin_temp = max(skin_temp, val)
+                except Exception:
+                    continue
+
+            thermal_dict = {
+                'CPU': cpu_temp,
+                'Bateria': battery_temp,
+                'GPU': gpu_temp,
+                'Chassi': skin_temp
+            }
+            self.thermal_telemetry.emit(thermal_dict)
+
+            # Battery
+            bat_data = data.get('bat', {})
+            if isinstance(bat_data, dict):
+                level = float(bat_data.get('level', 0.0))
+                voltage = int(bat_data.get('voltage', 0))
+                current = int(bat_data.get('current_now', bat_data.get('current now', 0)))
+            else:
+                level, voltage, current = 0.0, 0, 0
+
+            self.battery_telemetry.emit(level, voltage, current)
+        except Exception as e:
+            logger.error(f"Erro ao processar telemetria: {e}")
+

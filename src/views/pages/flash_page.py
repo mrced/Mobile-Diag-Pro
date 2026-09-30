@@ -65,7 +65,7 @@ class FlashPage(QWidget):
         self.tabs.addTab(self._create_partition_flash_tab(), "⚡ Flash de Partição")
         self.tabs.addTab(self._create_stock_rom_tab(), "📦 Stock ROM")
         self.tabs.addTab(self._create_sideload_tab(), "📥 ADB Sideload")
-        self.tabs.addTab(self._create_boot_control_tab(), "🔧 Desbloqueio & Boot")
+        self.tabs.addTab(self._create_boot_control_tab(), "🔓 Desbloqueio & Manutenção (TFT / FRP / Wipe)")
         splitter.addWidget(self.tabs)
         
         # Console e Progresso

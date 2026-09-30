@@ -31,7 +31,7 @@ class Sidebar(QWidget):
         self._pages_info = [
             ("📊  Dashboard", "📊", 0),
             ("🔬  Diagnóstico", "🔬", 1),
-            ("⚡  Flash/Recovery", "⚡", 2),
+            ("⚡  Flash & Desbloqueio", "⚡", 2),
             ("📈  Monitoramento", "📈", 3),
             ("💻  ADB Shell", "💻", 4),
             ("💾  Backup", "💾", 5),

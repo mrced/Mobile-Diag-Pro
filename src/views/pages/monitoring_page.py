@@ -1,17 +1,19 @@
 """
 Página de Monitoramento em Tempo Real.
+Telemetria contínua com layout limpo e cards de gráficos bem organizados.
 """
 from typing import Optional
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-    QPushButton, QComboBox, QGridLayout, QFrame
+    QPushButton, QComboBox, QGridLayout, QFrame, QScrollArea
 )
 from PySide6.QtCore import Qt, Slot
 
 from src.viewmodels.monitoring_vm import MonitoringViewModel
 from src.views.widgets.telemetry_chart import TelemetryChart
 from src.core.theme_manager import ThemeManager
+
 
 class MonitoringPage(QWidget):
     """
@@ -26,6 +28,37 @@ class MonitoringPage(QWidget):
         self._setup_ui()
         self._connect_signals()
         
+    def _create_chart_card(self, title: str, chart_widget: QWidget, val_label: QLabel) -> QFrame:
+        """Cria um card visual estilizado para acomodar cada gráfico sem sobreposição de textos."""
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
+                background: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+            }
+        """)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(10)
+        
+        # Cabeçalho do Card: Título à esquerda, Leitura instantânea à direita
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        
+        t_lbl = QLabel(title)
+        t_lbl.setStyleSheet("font-size: 15px; font-weight: bold; color: #f5f5f7; border: none; background: transparent;")
+        val_label.setStyleSheet("font-size: 15px; font-weight: bold; color: #0a84ff; border: none; background: transparent;")
+        
+        header.addWidget(t_lbl)
+        header.addStretch()
+        header.addWidget(val_label)
+        layout.addLayout(header)
+        
+        chart_widget.setMinimumHeight(180)
+        layout.addWidget(chart_widget, 1)
+        return card
+
     def _setup_ui(self) -> None:
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(20, 20, 20, 20)
@@ -41,8 +74,8 @@ class MonitoringPage(QWidget):
         font_title.setBold(True)
         self.title_label.setFont(font_title)
         
-        self.subtitle_label = QLabel("Telemetria Contínua de CPU, Memória, Temperatura e Energia")
-        self.subtitle_label.setStyleSheet("color: gray;")
+        self.subtitle_label = QLabel("Telemetria Contínua de CPU, Memória, Temperatura e Bateria")
+        self.subtitle_label.setStyleSheet("color: #98989d; font-size: 13px;")
         
         self.title_layout.addWidget(self.title_label)
         self.title_layout.addWidget(self.subtitle_label)
@@ -79,47 +112,44 @@ class MonitoringPage(QWidget):
         self.header_layout.addLayout(self.controls_layout)
         self.main_layout.addLayout(self.header_layout)
         
-        # --- Charts Grid ---
-        self.grid_layout = QGridLayout()
-        self.grid_layout.setSpacing(16)
+        # --- Scroll Area para os Gráficos ---
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setStyleSheet("background: transparent;")
+        
+        scroll_content = QWidget()
+        scroll_content.setStyleSheet("background: transparent;")
+        self.grid_layout = QGridLayout(scroll_content)
+        self.grid_layout.setContentsMargins(0, 0, 0, 0)
+        self.grid_layout.setSpacing(14)
         
         # 1. CPU Chart
-        self.cpu_chart = TelemetryChart(title="Utilização de CPU (%)", y_range=(0, 100), y_label="%", buffer_size=120)
+        self.cpu_chart = TelemetryChart(title="", y_range=(0, 100), y_label="%", buffer_size=120)
         self.lbl_cpu_val = QLabel("CPU: 0%")
-        self.lbl_cpu_val.setStyleSheet("font-size: 16px; font-weight: bold;")
-        cpu_layout = QVBoxLayout()
-        cpu_layout.addWidget(self.lbl_cpu_val)
-        cpu_layout.addWidget(self.cpu_chart)
-        self.grid_layout.addLayout(cpu_layout, 0, 0)
+        card_cpu = self._create_chart_card("Utilização de CPU (%)", self.cpu_chart, self.lbl_cpu_val)
+        self.grid_layout.addWidget(card_cpu, 0, 0)
         
         # 2. Memory Chart
-        self.mem_chart = TelemetryChart(title="Uso de Memória (MB)", y_range=(0, 8000), y_label="MB", buffer_size=120)
+        self.mem_chart = TelemetryChart(title="", y_range=(0, 8000), y_label="MB", buffer_size=120)
         self.lbl_mem_val = QLabel("RAM: 0 / 0 MB")
-        self.lbl_mem_val.setStyleSheet("font-size: 16px; font-weight: bold;")
-        mem_layout = QVBoxLayout()
-        mem_layout.addWidget(self.lbl_mem_val)
-        mem_layout.addWidget(self.mem_chart)
-        self.grid_layout.addLayout(mem_layout, 0, 1)
+        card_mem = self._create_chart_card("Uso de Memória (MB)", self.mem_chart, self.lbl_mem_val)
+        self.grid_layout.addWidget(card_mem, 0, 1)
         
         # 3. Thermal Chart
-        self.temp_chart = TelemetryChart(title="Zonas Térmicas (°C)", y_range=(20, 90), y_label="°C", buffer_size=120)
+        self.temp_chart = TelemetryChart(title="", y_range=(20, 90), y_label="°C", buffer_size=120)
         self.lbl_temp_val = QLabel("Temp CPU: --°C")
-        self.lbl_temp_val.setStyleSheet("font-size: 16px; font-weight: bold;")
-        temp_layout = QVBoxLayout()
-        temp_layout.addWidget(self.lbl_temp_val)
-        temp_layout.addWidget(self.temp_chart)
-        self.grid_layout.addLayout(temp_layout, 1, 0)
+        card_temp = self._create_chart_card("Zonas Térmicas (°C)", self.temp_chart, self.lbl_temp_val)
+        self.grid_layout.addWidget(card_temp, 1, 0)
         
         # 4. Battery Chart
-        self.bat_chart = TelemetryChart(title="Corrente da Bateria (mA)", y_range=(-3000, 3000), y_label="mA", buffer_size=120)
-        self.lbl_bat_val = QLabel("Bateria: 0% | 0mV")
-        self.lbl_bat_val.setStyleSheet("font-size: 16px; font-weight: bold;")
-        bat_layout = QVBoxLayout()
-        bat_layout.addWidget(self.lbl_bat_val)
-        bat_layout.addWidget(self.bat_chart)
-        self.grid_layout.addLayout(bat_layout, 1, 1)
+        self.bat_chart = TelemetryChart(title="", y_range=(-3000, 3000), y_label="mA", buffer_size=120)
+        self.lbl_bat_val = QLabel("Bateria: 0% | 0 mV")
+        card_bat = self._create_chart_card("Corrente da Bateria (mA)", self.bat_chart, self.lbl_bat_val)
+        self.grid_layout.addWidget(card_bat, 1, 1)
         
-        self.main_layout.addLayout(self.grid_layout, 1)
+        scroll_area.setWidget(scroll_content)
+        self.main_layout.addWidget(scroll_area, 1)
 
     def _connect_signals(self) -> None:
         self.btn_toggle.clicked.connect(self._on_toggle_clicked)
@@ -177,7 +207,6 @@ class MonitoringPage(QWidget):
         total = used + free + cached
         if total > 0:
             self.lbl_mem_val.setText(f"RAM: {used/1024:.1f} / {total/1024:.1f} GB")
-            # Ajusta limite Y dinamicamente caso seja maior que o padrão (8000 MB)
             max_y = max(8000.0, total)
             self.mem_chart.plot_widget.setYRange(0, max_y)
         self.mem_chart.add_multi_values({'Usado': used, 'Livre': free, 'Cache': cached})
@@ -185,10 +214,10 @@ class MonitoringPage(QWidget):
     @Slot(dict)
     def _on_thermal_data(self, zones: dict) -> None:
         cpu_temp = zones.get('CPU', 0.0)
-        self.lbl_temp_val.setText(f"Temp CPU: {cpu_temp:.1f}°C")
+        self.lbl_temp_val.setText(f"Temp CPU: {cpu_temp:.1f} °C")
         self.temp_chart.add_multi_values(zones)
 
     @Slot(float, int, int)
     def _on_battery_data(self, level: float, voltage: int, current: int) -> None:
-        self.lbl_bat_val.setText(f"Bateria: {level:.0f}% | {voltage}mV")
+        self.lbl_bat_val.setText(f"Bateria: {level:.0f}% | {voltage} mV")
         self.bat_chart.add_multi_values({'Corrente': current})

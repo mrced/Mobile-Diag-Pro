@@ -223,22 +223,26 @@ class TestItemWidget(QFrame):
         else:
             self.raw_data_label.hide()
             
-        # Se houver erro/aviso e não estiver expandido, expandir automaticamente
-        if status in [TestStatus.FAILED, TestStatus.WARNING] and not self._is_expanded:
-            self.toggle_details()
+        # Auto-expandir quando houver resultado com dados/detalhes
+        if status in [TestStatus.PASSED, TestStatus.FAILED, TestStatus.WARNING] and (message or details):
+            self.set_expanded(True)
+
+    def set_expanded(self, expand: bool = True):
+        """Define o estado de expansão dos detalhes do teste."""
+        self._is_expanded = expand
+        self.details_widget.setVisible(self._is_expanded)
+        self.expand_btn.setText("▲" if self._is_expanded else "▼")
 
     def reset(self):
         """
         Restaura o widget para o estado inicial.
         """
         self.set_status(TestStatus.PENDING)
-        if self._is_expanded:
-            self.toggle_details()
+        self.set_expanded(False)
 
     def toggle_details(self):
         """
         Alterna a visibilidade dos detalhes do teste.
         """
-        self._is_expanded = not self._is_expanded
-        self.details_widget.setVisible(self._is_expanded)
-        self.expand_btn.setText("▲" if self._is_expanded else "▼")
+        self.set_expanded(not self._is_expanded)
+

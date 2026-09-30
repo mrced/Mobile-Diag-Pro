@@ -96,9 +96,14 @@ class DiagnosticPage(QWidget):
         self.btn_export = QPushButton("Exportar Relatório")
         self.btn_export.setStyleSheet("padding: 8px 16px; border-radius: 4px;")
         
+        self.btn_toggle_expand = QPushButton("Expandir Todos")
+        self.btn_toggle_expand.setStyleSheet("padding: 8px 16px; border-radius: 4px;")
+        self.btn_toggle_expand.clicked.connect(self._toggle_expand_all)
+
         self.controls_layout.addWidget(self.btn_run_all)
         self.controls_layout.addWidget(self.btn_run_selected)
         self.controls_layout.addWidget(self.btn_stop)
+        self.controls_layout.addWidget(self.btn_toggle_expand)
         self.controls_layout.addStretch()
         self.controls_layout.addWidget(self.btn_export)
         
@@ -248,6 +253,13 @@ class DiagnosticPage(QWidget):
     @Slot()
     def _on_run_selected_clicked(self):
         self._on_run_all_clicked()
+
+    @Slot()
+    def _toggle_expand_all(self):
+        is_expanding = self.btn_toggle_expand.text() == "Expandir Todos"
+        for widget in self.test_widgets.values():
+            widget.set_expanded(is_expanding)
+        self.btn_toggle_expand.setText("Recolher Todos" if is_expanding else "Expandir Todos")
 
     @Slot()
     def _on_export_clicked(self):
