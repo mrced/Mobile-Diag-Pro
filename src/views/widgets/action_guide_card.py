@@ -1,14 +1,19 @@
 """
 Card Guia de Prontidão e Ações para Diagnóstico.
 Informa ao usuário o estado atual do dispositivo USB e orienta exatamente o que fazer
-para habilitar as análises (ex: aceitar depuração USB, sair do fastboot, etc.).
+para habilitar as análises com base no fabricante/modelo do aparelho (ex: Xiaomi, Samsung, Motorola).
 """
+import sys
+import ctypes
+import subprocess
+from pathlib import Path
 from typing import Optional
+
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, 
-    QPushButton, QWidget, QGridLayout
+    QPushButton, QWidget, QComboBox
 )
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from src.core.constants import DeviceMode
@@ -16,10 +21,72 @@ from src.core.theme_manager import ThemeManager
 from src.models.device import DeviceInfo
 
 
+BRAND_GUIDES = {
+    "xiaomi": {
+        "name": "Xiaomi / Redmi / POCO (MIUI & HyperOS)",
+        "subtitle": "Instruções específicas para o sistema MIUI e HyperOS",
+        "steps": [
+            ("1️⃣", "No celular, abra o app <b>Configurações</b> ➔ toque na primeira opção <b>Sobre o telefone</b>."),
+            ("2️⃣", "Toque <b>7 vezes seguidas</b> sobre <b>'Versão do MIUI'</b> (ou <b>'Versão do HyperOS'</b>) até surgir o aviso na tela: <i>'Você agora é um desenvolvedor!'</i>."),
+            ("3️⃣", "Volte para a tela inicial de <b>Configurações</b> ➔ role a página para baixo e toque em <b>Configurações adicionais</b> ➔ <b>Opções do desenvolvedor</b>."),
+            ("4️⃣", "Ative a chave principal <b>'Depuração USB'</b>."),
+            ("5️⃣", "⚠️ <b>OBRIGATÓRIO NA XIAOMI/POCO:</b> Ative também <b>'Instalar via USB'</b> e <b>'Depuração USB (Configurações de segurança)'</b> (necessário para testes de tela e diagnósticos)."),
+            ("6️⃣", "Ao conectar o cabo USB, verifique a notificação no topo da tela e selecione <b>'Transferência de arquivos (MTP)'</b> em vez de 'Apenas carregamento'."),
+            ("7️⃣", "Mantenha a tela desbloqueada: no popup <b>'Permitir depuração USB?'</b>, marque <i>'Sempre permitir a partir deste computador'</i> e toque em <b>Permitir</b>.")
+        ]
+    },
+    "samsung": {
+        "name": "Samsung Galaxy (One UI)",
+        "subtitle": "Instruções específicas para a interface One UI da Samsung",
+        "steps": [
+            ("1️⃣", "No smartphone Samsung, abra o app <b>Configurações</b> ➔ role até o final e toque em <b>Sobre o telefone</b>."),
+            ("2️⃣", "Toque na opção <b>Informações do software</b>."),
+            ("3️⃣", "Localize <b>'Número de compilação'</b> e toque <b>7 vezes consecutivas</b> sobre ele (digite seu PIN/desenho se solicitado)."),
+            ("4️⃣", "Volte duas telas até o menu inicial de <b>Configurações</b> ➔ no final da lista, toque em <b>Opções do desenvolvedor</b>."),
+            ("5️⃣", "Localize a seção <i>Depuração</i> e ative a chave <b>'Depuração USB'</b> (toque em <b>OK</b> para confirmar)."),
+            ("6️⃣", "Mantenha a tela desbloqueada e, quando surgir o alerta <b>'Permitir depuração USB?'</b>, marque <i>'Sempre permitir a partir deste computador'</i> e toque em <b>Permitir</b>.")
+        ]
+    },
+    "motorola": {
+        "name": "Motorola (Moto G, Edge, One, Razr)",
+        "subtitle": "Instruções específicas para aparelhos Motorola / Lenovo",
+        "steps": [
+            ("1️⃣", "No celular Motorola, abra <b>Configurações</b> ➔ role até o final e toque em <b>Sobre o telefone</b>."),
+            ("2️⃣", "Desça até o final da página e toque <b>7 vezes seguidas</b> sobre <b>'Número da versão'</b>."),
+            ("3️⃣", "Volte para <b>Configurações</b> ➔ toque em <b>Sistema</b> ➔ expanda <b>Avançado</b> ➔ <b>Opções do desenvolvedor</b>."),
+            ("4️⃣", "Ative a chave <b>'Depuração USB'</b> e confirme na janela pop-up."),
+            ("5️⃣", "Ao conectar o cabo USB, altere a notificação de <i>'Apenas Carregando'</i> para <b>'Transferência de arquivos'</b>.")
+        ]
+    },
+    "oppo": {
+        "name": "Realme / OPPO / OnePlus",
+        "subtitle": "Instruções para Realme UI, ColorOS e OxygenOS",
+        "steps": [
+            ("1️⃣", "Abra <b>Configurações</b> ➔ toque em <b>Sobre o dispositivo</b> ➔ <b>Versão</b>."),
+            ("2️⃣", "Toque <b>7 vezes seguidas</b> sobre <b>'Número da versão'</b> até ativar o modo de desenvolvedor."),
+            ("3️⃣", "Volte para <b>Configurações</b> ➔ <b>Configurações adicionais</b> (ou Sistema) ➔ <b>Opções do desenvolvedor</b>."),
+            ("4️⃣", "Ative a chave <b>'Depuração USB'</b> e confirme.")
+        ]
+    },
+    "generic": {
+        "name": "Android Puro / Google Pixel / Outras Marcas",
+        "subtitle": "Instruções padrão do sistema operacional Android",
+        "steps": [
+            ("1️⃣", "No aparelho, acesse <b>Configurações</b> ➔ <b>Sobre o telefone</b> (ou Sobre o dispositivo)."),
+            ("2️⃣", "Role a tela até o final e toque <b>7 vezes consecutivas</b> em <b>'Número da versão'</b>."),
+            ("3️⃣", "Volte em <b>Configurações ➔ Sistema ➔ Opções do desenvolvedor</b>."),
+            ("4️⃣", "Ative a chave <b>'Depuração USB'</b> e confirme na janela pop-up."),
+            ("5️⃣", "Conecte o cabo USB, marque a opção <i>'Sempre permitir a partir deste computador'</i> e confirme em <b>Permitir</b>.")
+        ]
+    }
+}
+
+
 class ActionGuideCard(QFrame):
     """
     Cartão visual interativo que orienta o usuário sobre os passos necessários
-    para que as análises de diagnóstico possam ocorrer de acordo com o estado do aparelho.
+    para que as análises de diagnóstico possam ocorrer de acordo com o estado do aparelho
+    e a fabricante detectada (Xiaomi, Samsung, Motorola, etc.).
     """
     
     # Sinais emitidos para ações rápidas
@@ -75,6 +142,40 @@ class ActionGuideCard(QFrame):
         self.header_layout.addWidget(self.status_badge, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
 
         self.main_layout.addLayout(self.header_layout)
+
+        # Barra de seleção de marca / modelo
+        self.brand_bar = QWidget()
+        self.brand_layout = QHBoxLayout(self.brand_bar)
+        self.brand_layout.setContentsMargins(4, 2, 4, 6)
+        self.brand_layout.setSpacing(10)
+
+        self.brand_icon = QLabel("🏷️")
+        self.brand_icon.setStyleSheet("font-size: 15px; background: transparent;")
+        self.brand_layout.addWidget(self.brand_icon)
+
+        self.brand_label = QLabel("Fabricante:")
+        self.brand_label.setStyleSheet("font-size: 13px; font-weight: 700; background: transparent;")
+        self.brand_layout.addWidget(self.brand_label)
+
+        self.brand_combo = QComboBox()
+        self.brand_combo.setMinimumWidth(280)
+        self.brand_combo.setFixedHeight(30)
+        self.brand_combo.setStyleSheet("""
+            QComboBox {
+                padding: 2px 10px;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+        """)
+        for key, info in BRAND_GUIDES.items():
+            self.brand_combo.addItem(info["name"], key)
+
+        self.brand_combo.currentIndexChanged.connect(self._on_brand_changed)
+        self.brand_layout.addWidget(self.brand_combo)
+        self.brand_layout.addStretch()
+
+        self.main_layout.addWidget(self.brand_bar)
 
         # Linha divisória
         self.divider = QFrame()
@@ -146,6 +247,7 @@ class ActionGuideCard(QFrame):
         """)
         self.title_label.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {c.text_primary}; background: transparent;")
         self.subtitle_label.setStyleSheet(f"font-size: 13px; color: {c.text_secondary}; background: transparent;")
+        self.brand_label.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {c.text_primary}; background: transparent;")
         self.divider.setStyleSheet(f"background-color: {c.separator};")
 
     def _clear_steps(self) -> None:
@@ -178,6 +280,31 @@ class ActionGuideCard(QFrame):
         container.setLayout(row)
         self.steps_layout.addWidget(container)
 
+    def _populate_brand_steps(self, brand_key: str) -> None:
+        """Renderiza os passos de ativação para a marca selecionada."""
+        guide = BRAND_GUIDES.get(brand_key, BRAND_GUIDES["generic"])
+        for icon, text in guide["steps"]:
+            self._add_step(icon, text, highlight=True)
+
+    def _detect_brand_key(self, manufacturer: str, model: str) -> str:
+        """Infere a chave de marca a partir dos dados do fabricante ou modelo."""
+        text = f"{manufacturer} {model}".lower()
+        if any(w in text for w in ["xiaomi", "redmi", "poco", "miui", "hyperos", "jlq"]):
+            return "xiaomi"
+        if any(w in text for w in ["samsung", "galaxy"]):
+            return "samsung"
+        if any(w in text for w in ["motorola", "moto", "lenovo"]):
+            return "motorola"
+        if any(w in text for w in ["realme", "oppo", "oneplus"]):
+            return "oppo"
+        return "generic"
+
+    def _on_brand_changed(self, index: int) -> None:
+        if self._current_mode in (DeviceMode.USB_NO_DEBUGGING, DeviceMode.UNKNOWN):
+            brand_key = self.brand_combo.itemData(index) or "generic"
+            self._clear_steps()
+            self._populate_brand_steps(brand_key)
+
     def set_disconnected(self) -> None:
         """Configura o cartão para o estado desconectado."""
         self._current_mode = DeviceMode.UNKNOWN
@@ -191,11 +318,10 @@ class ActionGuideCard(QFrame):
         self.status_badge.setText("● Desconectado")
         self.status_badge.setStyleSheet(f"background-color: rgba(142, 142, 147, 0.18); color: {c.muted}; border-radius: 8px; padding: 4px 8px; font-weight: 600;")
 
+        self.brand_bar.setVisible(True)
         self._clear_steps()
-        self._add_step("1️⃣", "Conecte o smartphone ao computador usando um <b>cabo USB de boa qualidade</b> (com suporte a dados).")
-        self._add_step("2️⃣", "No celular, abra <b>Configurações ➔ Sobre o telefone</b> e toque <b>7 vezes</b> seguidas em <i>'Número da Versão'</i> para ativar o modo desenvolvedor.")
-        self._add_step("3️⃣", "Acesse <b>Configurações ➔ Sistema ➔ Opções do Desenvolvedor</b> e ATIVE a opção <b>'Depuração USB'</b>.")
-        self._add_step("4️⃣", "Ao conectar, altere a notificação USB de <i>'Apenas Carregar'</i> para <b>'Transferência de Arquivos (MTP)'</b> caso solicitado.")
+        brand_key = self.brand_combo.currentData() or "xiaomi"
+        self._populate_brand_steps(brand_key)
 
         self.btn_primary.setVisible(False)
         self.btn_secondary.setText("🔄 Atualizar / Verificar Novamente")
@@ -211,6 +337,7 @@ class ActionGuideCard(QFrame):
         self._clear_steps()
 
         if mode == DeviceMode.ADB_UNAUTHORIZED:
+            self.brand_bar.setVisible(False)
             self.icon_label.setText("⚠️")
             self.title_label.setText("Ação Obrigatória: Autorizar Depuração USB na Tela do Celular")
             self.subtitle_label.setText("O aparelho foi detectado, mas o Android requer sua permissão de segurança para liberar a análise")
@@ -229,6 +356,7 @@ class ActionGuideCard(QFrame):
             self.btn_secondary.setVisible(False)
 
         elif mode in (DeviceMode.FASTBOOT, DeviceMode.FASTBOOTD):
+            self.brand_bar.setVisible(False)
             self.icon_label.setText("⚡")
             self.title_label.setText("Aparelho Detectado em Modo Fastboot (Bootloader)")
             self.subtitle_label.setText("O dispositivo está em modo de pré-inicialização de baixo nível")
@@ -246,6 +374,7 @@ class ActionGuideCard(QFrame):
             self.btn_secondary.setVisible(True)
 
         elif mode in (DeviceMode.RECOVERY, DeviceMode.SIDELOAD):
+            self.brand_bar.setVisible(False)
             self.icon_label.setText("📥")
             self.title_label.setText("Aparelho Detectado em Modo Recovery / Sideload")
             self.subtitle_label.setText("O dispositivo está no ambiente de recuperação")
@@ -262,6 +391,7 @@ class ActionGuideCard(QFrame):
             self.btn_secondary.setVisible(True)
 
         elif mode == DeviceMode.DRIVER_MISSING:
+            self.brand_bar.setVisible(False)
             self.icon_label.setText("⚠️")
             model = getattr(device_info, 'model', 'Dispositivo')
             manufacturer = getattr(device_info, 'manufacturer', '')
@@ -287,21 +417,27 @@ class ActionGuideCard(QFrame):
             self.btn_secondary.setVisible(True)
 
         elif mode == DeviceMode.USB_NO_DEBUGGING:
+            self.brand_bar.setVisible(True)
             self.icon_label.setText("📱")
             model = getattr(device_info, 'model', 'Dispositivo')
             manufacturer = getattr(device_info, 'manufacturer', '')
             full_name = f"{manufacturer} {model}".strip()
 
-            self.title_label.setText(f"Aparelho Detectado — Depuração USB Desativada no Celular")
-            self.subtitle_label.setText(f"O Windows reconheceu o {full_name}, mas o modo de diagnóstico ADB está desligado no aparelho")
+            self.title_label.setText(f"Aparelho Conectado — Depuração USB Desativada ({full_name})")
+            self.subtitle_label.setText("O modo de depuração USB precisa ser ativado no aparelho para liberar as análises de diagnóstico")
 
-            self.status_badge.setText("● Depuração USB Desativada")
+            self.status_badge.setText("● Depuração Desativada")
             self.status_badge.setStyleSheet("background-color: rgba(255, 149, 0, 0.2); color: #ff9500; border-radius: 8px; padding: 4px 8px; font-weight: 700;")
 
-            self._add_step("1️⃣", "No celular, abra <b>Configurações ➔ Sobre o telefone</b>.", highlight=True)
-            self._add_step("2️⃣", "Toque <b>7 vezes seguidas</b> em <i>'Número da Versão'</i> (ou <i>'Versão do MIUI/HyperOS'</i> se Xiaomi) até virar desenvolvedor.", highlight=True)
-            self._add_step("3️⃣", "Acesse <b>Configurações ➔ Sistema ➔ Opções do Desenvolvedor</b> e ATIVE <b>'Depuração USB'</b>.", highlight=True)
-            self._add_step("4️⃣", "Ao conectar o cabo USB, altere a notificação de <i>'Apenas Carregando'</i> para <b>'Transferência de Arquivos (MTP)'</b>.")
+            # Auto-selecionar a marca com base no dispositivo
+            brand_key = self._detect_brand_key(manufacturer, model)
+            idx = self.brand_combo.findData(brand_key)
+            if idx >= 0:
+                self.brand_combo.blockSignals(True)
+                self.brand_combo.setCurrentIndex(idx)
+                self.brand_combo.blockSignals(False)
+
+            self._populate_brand_steps(brand_key)
 
             self.btn_primary.setText("🔄 Verificar Novamente")
             self.btn_primary.setVisible(True)
@@ -309,6 +445,7 @@ class ActionGuideCard(QFrame):
             self.btn_secondary.setVisible(True)
 
         elif mode == DeviceMode.QUALCOMM_EDL:
+            self.brand_bar.setVisible(False)
             self.icon_label.setText("⚠️")
             self.title_label.setText("Aparelho Detectado em Modo de Emergência Qualcomm (EDL 9008)")
             self.subtitle_label.setText("Dispositivo em modo de baixo nível para recuperação / unbrick")
@@ -321,6 +458,7 @@ class ActionGuideCard(QFrame):
             self.btn_secondary.setVisible(True)
 
         elif mode == DeviceMode.SAMSUNG_DOWNLOAD:
+            self.brand_bar.setVisible(False)
             self.icon_label.setText("⚡")
             self.title_label.setText("Aparelho Detectado em Modo Download Samsung (Odin)")
             self.subtitle_label.setText("Pronto para gravação de firmware Samsung oficial")
@@ -334,6 +472,7 @@ class ActionGuideCard(QFrame):
             self.btn_secondary.setVisible(True)
 
         elif mode == DeviceMode.ADB_NORMAL:
+            self.brand_bar.setVisible(False)
             self.icon_label.setText("✅")
             model = getattr(device_info, 'model', 'Dispositivo')
             manufacturer = getattr(device_info, 'manufacturer', '')
@@ -373,7 +512,7 @@ class ActionGuideCard(QFrame):
             self.action_refresh_device.emit()
 
     def _on_secondary_clicked(self) -> None:
-        if self._current_mode == DeviceMode.DRIVER_MISSING or self._current_mode == DeviceMode.USB_NO_DEBUGGING:
+        if self._current_mode in (DeviceMode.DRIVER_MISSING, DeviceMode.USB_NO_DEBUGGING):
             self._open_device_manager()
         elif self._current_mode in (DeviceMode.FASTBOOT, DeviceMode.FASTBOOTD, DeviceMode.RECOVERY, DeviceMode.SIDELOAD, DeviceMode.ADB_NORMAL):
             self.action_reboot_system.emit()
@@ -382,9 +521,6 @@ class ActionGuideCard(QFrame):
 
     def _install_driver(self) -> None:
         """Executa a rotina de instalação de driver Fastboot/WinUSB com privilégios administrativos."""
-        import sys
-        import ctypes
-        from pathlib import Path
         try:
             root_dir = Path(__file__).resolve().parent.parent.parent.parent
             script_path = root_dir / "scripts" / "install_driver.cmd"
@@ -401,8 +537,6 @@ class ActionGuideCard(QFrame):
 
     def _open_device_manager(self) -> None:
         """Abre o Gerenciador de Dispositivos do Windows."""
-        import sys
-        import subprocess
         if sys.platform == "win32":
             try:
                 subprocess.Popen(["devmgmt.msc"], shell=True)

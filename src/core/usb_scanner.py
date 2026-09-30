@@ -139,7 +139,13 @@ class USBScanner:
 
                 is_driver_missing = bool(config_flags & CONFIGFLAG_FAILEDINSTALL)
                 vendor_name = KNOWN_VENDORS.get(vid, mfg or "Fabricante Android")
-                model_name = self._find_cached_device_model(serial) or desc or "Dispositivo Android"
+                cached_model = self._find_cached_device_model(serial)
+                if cached_model:
+                    model_name = cached_model
+                elif desc and not any(generic in desc.lower() for generic in ["mtp", "composite", "composto", "gadget", "download"]):
+                    model_name = desc
+                else:
+                    model_name = f"Smartphone {vendor_name}"
 
                 # Determinar o modo
                 mode, status_msg = self._determine_mode(vid, pid, compat_ids, is_driver_missing, desc)
@@ -201,14 +207,14 @@ class USBScanner:
         if vid == "0x04e8" and pid in ("0x685d", "0x6860"):
             return DeviceMode.SAMSUNG_DOWNLOAD, "Modo Download Samsung (Odin)"
 
-        # Fastboot (Protocolo 03 ou PID 4ee0 ou gadget)
-        if "PROT_03" in compat_str or pid == "0x4ee0" or "fastboot" in desc.lower() or "gadget" in desc.lower():
+        # Fastboot (Protocolo 03 em Class FF / SubClass 42 ou download gadget)
+        if "CLASS_FF&SUBCLASS_42&PROT_03" in compat_str or (pid == "0x4ee0" and "gadget" in desc.lower()):
             if is_driver_missing:
                 return DeviceMode.DRIVER_MISSING, "Fastboot Detectado — Driver Ausente no Windows (Código 28)"
             return DeviceMode.FASTBOOT, "Modo Fastboot (Bootloader)"
 
-        # ADB (Protocolo 01)
-        if "PROT_01" in compat_str:
+        # ADB (Protocolo 01 em Class FF / SubClass 42)
+        if "CLASS_FF&SUBCLASS_42&PROT_01" in compat_str:
             if is_driver_missing:
                 return DeviceMode.DRIVER_MISSING, "ADB Detectado — Driver Ausente no Windows (Código 28)"
             return DeviceMode.ADB_NORMAL, "Modo ADB Conectado"
@@ -229,6 +235,27 @@ class USBScanner:
             return ""
 
         import winreg
+        import re
+
+        # 1. Buscar no registro do WPD (Windows Portable Devices)
+        wpd_path = r"SOFTWARE\Microsoft\Windows Portable Devices\Devices"
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, wpd_path) as root:
+                num_subkeys = winreg.QueryInfoKey(root)[0]
+                for i in range(num_subkeys):
+                    k_name = winreg.EnumKey(root, i)
+                    if serial.lower() in k_name.lower():
+                        with winreg.OpenKey(root, k_name) as k:
+                            try:
+                                fn, _ = winreg.QueryValueEx(k, "FriendlyName")
+                                if fn and not fn.startswith("@") and not re.match(r"^[a-zA-Z]:\\?$", fn.strip()):
+                                    return fn
+                            except OSError:
+                                pass
+        except Exception:
+            pass
+
+        # 2. Buscar no registro Enum\USB
         key_path = r"SYSTEM\CurrentControlSet\Enum\USB"
         try:
             with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as root:
@@ -244,7 +271,7 @@ class USBScanner:
                                     with winreg.OpenKey(dev_k, inst_id) as inst_k:
                                         try:
                                             desc, _ = winreg.QueryValueEx(inst_k, "DeviceDesc")
-                                            if desc and not desc.startswith("@") and "gadget" not in desc.lower():
+                                            if desc and not desc.startswith("@") and not any(g in desc.lower() for g in ["gadget", "mtp", "composite", "composto"]):
                                                 return desc
                                         except OSError:
                                             pass
