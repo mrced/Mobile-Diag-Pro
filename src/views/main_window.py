@@ -103,7 +103,7 @@ class MainWindow(QMainWindow):
         # Delegado para o Sidebar, assumindo que ele lida com sua própria animação
         pass
 
-    def nativeEvent(self, event_type: bytes, message: int) -> tuple[bool, int]:
+    def nativeEvent(self, event_type: bytes, message) -> tuple[bool, int]:
         """
         Manipula eventos nativos para permitir redimensionamento nas bordas
         em janelas sem borda no Windows.
@@ -111,50 +111,53 @@ class MainWindow(QMainWindow):
         if sys.platform != "win32":
             return super().nativeEvent(event_type, message)
             
-        import ctypes
-        from ctypes.wintypes import MSG
-        
-        msg = ctypes.cast(message, ctypes.POINTER(MSG)).contents
-        if msg.message == 0x0084: # WM_NCHITTEST
-            x = msg.pt.x - self.x()
-            y = msg.pt.y - self.y()
+        try:
+            import ctypes
+            from ctypes.wintypes import MSG
             
-            # Constantes do HitTest do Windows
-            HTLEFT = 10
-            HTRIGHT = 11
-            HTTOP = 12
-            HTTOPLEFT = 13
-            HTTOPRIGHT = 14
-            HTBOTTOM = 15
-            HTBOTTOMLEFT = 16
-            HTBOTTOMRIGHT = 17
-            HTCLIENT = 1
-            
-            border_width = 8
-            
-            if self.isMaximized():
-                return False, 0
+            msg = ctypes.wintypes.MSG.from_address(int(message))
+            if msg.message == 0x0084: # WM_NCHITTEST
+                x = msg.pt.x - self.x()
+                y = msg.pt.y - self.y()
                 
-            on_left = x < border_width
-            on_right = x > self.width() - border_width
-            on_top = y < border_width
-            on_bottom = y > self.height() - border_width
-            
-            if on_top and on_left:
-                return True, HTTOPLEFT
-            elif on_top and on_right:
-                return True, HTTOPRIGHT
-            elif on_bottom and on_left:
-                return True, HTBOTTOMLEFT
-            elif on_bottom and on_right:
-                return True, HTBOTTOMRIGHT
-            elif on_left:
-                return True, HTLEFT
-            elif on_right:
-                return True, HTRIGHT
-            elif on_top:
-                return True, HTTOP
-            elif on_bottom:
-                return True, HTBOTTOM
+                # Constantes do HitTest do Windows
+                HTLEFT = 10
+                HTRIGHT = 11
+                HTTOP = 12
+                HTTOPLEFT = 13
+                HTTOPRIGHT = 14
+                HTBOTTOM = 15
+                HTBOTTOMLEFT = 16
+                HTBOTTOMRIGHT = 17
+                HTCLIENT = 1
                 
+                border_width = 8
+                
+                if self.isMaximized():
+                    return False, 0
+                    
+                on_left = x < border_width
+                on_right = x > self.width() - border_width
+                on_top = y < border_width
+                on_bottom = y > self.height() - border_width
+                
+                if on_top and on_left:
+                    return True, HTTOPLEFT
+                elif on_top and on_right:
+                    return True, HTTOPRIGHT
+                elif on_bottom and on_left:
+                    return True, HTBOTTOMLEFT
+                elif on_bottom and on_right:
+                    return True, HTBOTTOMRIGHT
+                elif on_left:
+                    return True, HTLEFT
+                elif on_right:
+                    return True, HTRIGHT
+                elif on_top:
+                    return True, HTTOP
+                elif on_bottom:
+                    return True, HTBOTTOM
+        except Exception:
+            pass
+                    
         return super().nativeEvent(event_type, message)

@@ -25,13 +25,16 @@ class USBEventFilter(QAbstractNativeEventFilter):
         Filtra os eventos nativos procurando por WM_DEVICECHANGE.
         Retorna (False, 0) para permitir que outros processos tratem o evento.
         """
-        if eventType == b"windows_generic_MSG" or eventType == b"windows_dispatcher_MSG":
-            msg = ctypes.wintypes.MSG.from_address(message.__int__())
-            if msg.message == self.WM_DEVICECHANGE:
-                if msg.wParam == self.DBT_DEVICEARRIVAL:
-                    self.callback_plugged()
-                elif msg.wParam == self.DBT_DEVICEREMOVECOMPLETE:
-                    self.callback_unplugged()
+        try:
+            if eventType in (b"windows_generic_MSG", b"windows_dispatcher_MSG"):
+                msg = ctypes.wintypes.MSG.from_address(int(message))
+                if msg.message == self.WM_DEVICECHANGE:
+                    if msg.wParam == self.DBT_DEVICEARRIVAL:
+                        self.callback_plugged()
+                    elif msg.wParam == self.DBT_DEVICEREMOVECOMPLETE:
+                        self.callback_unplugged()
+        except Exception:
+            pass
         return False, 0
 
 
