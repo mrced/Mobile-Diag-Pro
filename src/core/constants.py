@@ -22,6 +22,8 @@ class DeviceMode(Enum):
     SAMSUNG_DOWNLOAD = "samsung_download"
     QUALCOMM_EDL = "qualcomm_edl"
     MEDIATEK_BROM = "mediatek_brom"
+    DRIVER_MISSING = "driver_missing"
+    USB_NO_DEBUGGING = "usb_no_debugging"
 
 class TestStatus(Enum):
     """Status dos testes de diagnóstico."""
@@ -71,7 +73,13 @@ KNOWN_VENDORS: dict[str, str] = {
     "0x12d1": "Huawei",
     "0x22d9": "OPPO",
     "0x05c6": "Qualcomm",
-    "0x0e8d": "MediaTek"
+    "0x0e8d": "MediaTek",
+    "0x31ef": "Xiaomi / JLQ",
+    "0x1782": "Spreadtrum / Unisoc",
+    "0x2e04": "HMD Global / Nokia",
+    "0x19d2": "ZTE",
+    "0x0bb4": "HTC",
+    "0x0b05": "ASUS"
 }
 
 EDL_PIDS: dict[str, str] = {

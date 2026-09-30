@@ -13,6 +13,7 @@ from src.core.adb_client import ADBClient
 from src.core.adb_commands import ADBCommands
 from src.core.constants import DeviceMode, POLLING_INTERVAL
 from src.core.logger import get_logger
+from src.core.usb_scanner import USBScanner, RawUSBDevice
 from src.models.device import DeviceInfo
 
 logger = get_logger(__name__)
@@ -39,9 +40,10 @@ class DeviceManager(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
 
-        # Clientes ADB
+        # Clientes ADB e Varredor USB
         self._adb_client = ADBClient()
         self._adb_commands = ADBCommands(self._adb_client)
+        self._usb_scanner = USBScanner()
 
         # Estado atual
         self._current_device: Optional[DeviceInfo] = None
@@ -109,43 +111,50 @@ class DeviceManager(QObject):
 
     @Slot()
     def _poll_devices(self) -> None:
-        """Verifica periodicamente os dispositivos conectados."""
+        """Verifica periodicamente os dispositivos conectados via ADB, Fastboot e USB nativo."""
         try:
-            # Verificar dispositivos ADB
+            # Lista de tuplas: (serial, mode, optional_raw_dev)
+            all_devices: list[tuple[str, DeviceMode, Optional[RawUSBDevice]]] = []
+
+            # 1. Verificar dispositivos ADB
             adb_devices = self._adb_client.get_devices()
-
-            # Verificar dispositivos Fastboot
-            fastboot_devices = self._get_fastboot_devices()
-
-            # Combinar listas
-            all_devices = []
             for serial, state in adb_devices:
                 mode = self._state_to_mode(state)
-                all_devices.append((serial, mode))
+                all_devices.append((serial, mode, None))
 
+            # 2. Verificar dispositivos Fastboot
+            fastboot_devices = self._get_fastboot_devices()
             for serial in fastboot_devices:
-                all_devices.append((serial, DeviceMode.FASTBOOT))
+                all_devices.append((serial, DeviceMode.FASTBOOT, None))
+
+            # 3. Se nem ADB nem Fastboot acharam nada, escanear portas USB nativas do Windows
+            if not all_devices:
+                raw_usb_devices = self._usb_scanner.scan_connected_android_devices()
+                for raw_dev in raw_usb_devices:
+                    serial = raw_dev.serial or raw_dev.instance_id
+                    all_devices.append((serial, raw_dev.mode, raw_dev))
 
             # Emitir lista atualizada
             self.device_list_updated.emit(
-                [(s, m.value) for s, m in all_devices]
+                [(s, m.value) for s, m, _ in all_devices]
             )
 
             # Gerenciar conexão
             if all_devices:
-                serial, mode = all_devices[0]  # Usar primeiro dispositivo
+                serial, mode, raw_dev = all_devices[0]  # Usar primeiro dispositivo
 
                 if not self._connected or self._current_serial != serial:
                     # Novo dispositivo conectado
                     self._current_serial = serial
                     self._current_mode = mode
                     self._connected = True
-                    self._fetch_device_info(serial, mode)
+                    self._fetch_device_info(serial, mode, raw_dev)
 
                 elif self._current_mode != mode:
                     # Modo mudou
                     self._current_mode = mode
                     self.device_mode_changed.emit(mode)
+                    self._fetch_device_info(serial, mode, raw_dev)
                     logger.info(f"Modo do dispositivo alterado: {mode.value}")
 
             elif self._connected:
@@ -192,9 +201,30 @@ class DeviceManager(QObject):
         except (subprocess.SubprocessError, FileNotFoundError):
             return []
 
-    def _fetch_device_info(self, serial: str, mode: DeviceMode) -> None:
+    def _fetch_device_info(self, serial: str, mode: DeviceMode, raw_dev: Optional[RawUSBDevice] = None) -> None:
         """Busca informações detalhadas do dispositivo."""
         try:
+            # Se foi detectado diretamente pelo scanner USB nativo
+            if raw_dev is not None:
+                device_info = DeviceInfo(
+                    serial=serial,
+                    manufacturer=raw_dev.vendor_name,
+                    model=raw_dev.model_name,
+                    brand=raw_dev.vendor_name,
+                    mode=mode,
+                    driver_missing=raw_dev.is_driver_missing,
+                    status_message=raw_dev.status_message,
+                    hardware_id=f"{raw_dev.vid}:{raw_dev.pid}",
+                    usb_desc=raw_dev.description,
+                )
+                self._current_device = device_info
+                self.device_connected.emit(device_info)
+                logger.info(
+                    f"Dispositivo USB detectado: {device_info.manufacturer} "
+                    f"{device_info.model} (Modo: {mode.value}, Driver Ausente: {raw_dev.is_driver_missing})"
+                )
+                return
+
             if mode == DeviceMode.ADB_NORMAL:
                 info_dict = self._adb_commands.get_device_info(serial)
                 device_info = DeviceInfo(
@@ -234,9 +264,11 @@ class DeviceManager(QObject):
                 logger.warning(f"Dispositivo não autorizado: {serial}")
 
             elif mode == DeviceMode.FASTBOOT:
+                # Tentar obter modelo do cache
+                cached_model = self._usb_scanner._find_cached_device_model(serial) if self._usb_scanner else ""
                 device_info = DeviceInfo(
                     serial=serial,
-                    model="Modo Fastboot",
+                    model=cached_model or "Modo Fastboot",
                     mode=mode,
                 )
                 self._current_device = device_info

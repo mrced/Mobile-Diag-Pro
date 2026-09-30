@@ -261,6 +261,78 @@ class ActionGuideCard(QFrame):
             self.btn_secondary.setText("🔄 Reiniciar no Sistema Android")
             self.btn_secondary.setVisible(True)
 
+        elif mode == DeviceMode.DRIVER_MISSING:
+            self.icon_label.setText("⚠️")
+            model = getattr(device_info, 'model', 'Dispositivo')
+            manufacturer = getattr(device_info, 'manufacturer', '')
+            serial = getattr(device_info, 'serial', '')
+            dev_desc = getattr(device_info, 'usb_desc', 'USB download gadget')
+            full_name = f"{manufacturer} {model}".strip()
+
+            self.title_label.setText(f"Aparelho Conectado via USB — Driver Windows Não Instalado (Código 28)")
+            self.subtitle_label.setText(f"O Windows detectou o hardware ({full_name}), mas falta o driver ADB/Fastboot no sistema")
+
+            self.status_badge.setText("● Driver Ausente (Cód 28)")
+            self.status_badge.setStyleSheet("background-color: rgba(255, 69, 58, 0.2); color: #ff453a; border-radius: 8px; padding: 4px 8px; font-weight: 700;")
+
+            self._add_step("📱", f"<b>Hardware Identificado:</b> {full_name} (Serial: <code>{serial}</code> | Desc: <i>{dev_desc}</i>).", highlight=True)
+            self._add_step("⚠️", "O Windows reporta <b>Código 28 (CM_PROB_FAILED_INSTALL)</b>: O driver USB não está associado a este aparelho.", highlight=True)
+            self._add_step("⚡", "O celular está em <b>Modo Fastboot / Download Gadget</b>. O Windows precisa do driver WinUSB para permitir comandos.")
+            self._add_step("🔧", "<b>Opção 1 (Instalação 1-Clique):</b> Clique no botão azul abaixo para instalar o driver Fastboot com permissão de Administrador (UAC).")
+            self._add_step("💡", "<b>Opção 2 (Ligar o Celular):</b> Se o aparelho entrou nessa tela por engano, segure o botão <b>Power</b> por 15 segundos para reiniciar no Android normal com a Depuração USB ativada.")
+
+            self.btn_primary.setText("🔧 Instalar Driver Fastboot (UAC)")
+            self.btn_primary.setVisible(True)
+            self.btn_secondary.setText("📁 Abrir Gerenciador de Dispositivos")
+            self.btn_secondary.setVisible(True)
+
+        elif mode == DeviceMode.USB_NO_DEBUGGING:
+            self.icon_label.setText("📱")
+            model = getattr(device_info, 'model', 'Dispositivo')
+            manufacturer = getattr(device_info, 'manufacturer', '')
+            full_name = f"{manufacturer} {model}".strip()
+
+            self.title_label.setText(f"Aparelho Detectado — Depuração USB Desativada no Celular")
+            self.subtitle_label.setText(f"O Windows reconheceu o {full_name}, mas o modo de diagnóstico ADB está desligado no aparelho")
+
+            self.status_badge.setText("● Depuração USB Desativada")
+            self.status_badge.setStyleSheet("background-color: rgba(255, 149, 0, 0.2); color: #ff9500; border-radius: 8px; padding: 4px 8px; font-weight: 700;")
+
+            self._add_step("1️⃣", "No celular, abra <b>Configurações ➔ Sobre o telefone</b>.", highlight=True)
+            self._add_step("2️⃣", "Toque <b>7 vezes seguidas</b> em <i>'Número da Versão'</i> (ou <i>'Versão do MIUI/HyperOS'</i> se Xiaomi) até virar desenvolvedor.", highlight=True)
+            self._add_step("3️⃣", "Acesse <b>Configurações ➔ Sistema ➔ Opções do Desenvolvedor</b> e ATIVE <b>'Depuração USB'</b>.", highlight=True)
+            self._add_step("4️⃣", "Ao conectar o cabo USB, altere a notificação de <i>'Apenas Carregando'</i> para <b>'Transferência de Arquivos (MTP)'</b>.")
+
+            self.btn_primary.setText("🔄 Verificar Novamente")
+            self.btn_primary.setVisible(True)
+            self.btn_secondary.setText("📁 Abrir Gerenciador de Dispositivos")
+            self.btn_secondary.setVisible(True)
+
+        elif mode == DeviceMode.QUALCOMM_EDL:
+            self.icon_label.setText("⚠️")
+            self.title_label.setText("Aparelho Detectado em Modo de Emergência Qualcomm (EDL 9008)")
+            self.subtitle_label.setText("Dispositivo em modo de baixo nível para recuperação / unbrick")
+            self.status_badge.setText("● Modo EDL 9008")
+            self.status_badge.setStyleSheet("background-color: rgba(255, 149, 0, 0.2); color: #ff9500; border-radius: 8px; padding: 4px 8px; font-weight: 700;")
+            self._add_step("ℹ️", "O aparelho está no modo Qualcomm HS-USB QDLoader 9008.")
+            self._add_step("💡", "Para iniciar o Android normalmente, segure os botões Power + Volume Menos por 15 segundos.")
+            self.btn_primary.setVisible(False)
+            self.btn_secondary.setText("🔄 Verificar Novamente")
+            self.btn_secondary.setVisible(True)
+
+        elif mode == DeviceMode.SAMSUNG_DOWNLOAD:
+            self.icon_label.setText("⚡")
+            self.title_label.setText("Aparelho Detectado em Modo Download Samsung (Odin)")
+            self.subtitle_label.setText("Pronto para gravação de firmware Samsung oficial")
+            self.status_badge.setText("● Modo Download (Odin)")
+            self.status_badge.setStyleSheet("background-color: rgba(0, 122, 255, 0.2); color: #007aff; border-radius: 8px; padding: 4px 8px; font-weight: 700;")
+            self._add_step("⚡", "Aparelho Samsung pronto para flashing de ROM de fábrica via Odin.")
+            self._add_step("💡", "Para reiniciar normalmente, segure Volume Menos + Botão Lateral/Power por 10 segundos.")
+            self.btn_primary.setText("⚡ Abrir Aba Flash")
+            self.btn_primary.setVisible(True)
+            self.btn_secondary.setText("🔄 Verificar Novamente")
+            self.btn_secondary.setVisible(True)
+
         elif mode == DeviceMode.ADB_NORMAL:
             self.icon_label.setText("✅")
             model = getattr(device_info, 'model', 'Dispositivo')
@@ -293,11 +365,46 @@ class ActionGuideCard(QFrame):
             self.action_go_to_diagnostic.emit()
         elif self._current_mode == DeviceMode.ADB_UNAUTHORIZED:
             self.action_refresh_device.emit()
-        elif self._current_mode in (DeviceMode.FASTBOOT, DeviceMode.FASTBOOTD, DeviceMode.RECOVERY, DeviceMode.SIDELOAD):
+        elif self._current_mode == DeviceMode.DRIVER_MISSING:
+            self._install_driver()
+        elif self._current_mode in (DeviceMode.FASTBOOT, DeviceMode.FASTBOOTD, DeviceMode.RECOVERY, DeviceMode.SIDELOAD, DeviceMode.SAMSUNG_DOWNLOAD):
             self.action_go_to_flash.emit()
+        else:
+            self.action_refresh_device.emit()
 
     def _on_secondary_clicked(self) -> None:
-        if self._current_mode in (DeviceMode.FASTBOOT, DeviceMode.FASTBOOTD, DeviceMode.RECOVERY, DeviceMode.SIDELOAD, DeviceMode.ADB_NORMAL):
+        if self._current_mode == DeviceMode.DRIVER_MISSING or self._current_mode == DeviceMode.USB_NO_DEBUGGING:
+            self._open_device_manager()
+        elif self._current_mode in (DeviceMode.FASTBOOT, DeviceMode.FASTBOOTD, DeviceMode.RECOVERY, DeviceMode.SIDELOAD, DeviceMode.ADB_NORMAL):
             self.action_reboot_system.emit()
         else:
             self.action_refresh_device.emit()
+
+    def _install_driver(self) -> None:
+        """Executa a rotina de instalação de driver Fastboot/WinUSB com privilégios administrativos."""
+        import sys
+        import ctypes
+        from pathlib import Path
+        try:
+            root_dir = Path(__file__).resolve().parent.parent.parent.parent
+            script_path = root_dir / "scripts" / "install_driver.cmd"
+            if script_path.exists() and sys.platform == "win32":
+                ctypes.windll.shell32.ShellExecuteW(None, "runas", str(script_path), "", None, 1)
+            else:
+                inf_path = root_dir / "fastboot_jlq.inf"
+                if not inf_path.exists():
+                    inf_path = root_dir / "assets" / "drivers" / "fastboot_jlq.inf"
+                if inf_path.exists() and sys.platform == "win32":
+                    ctypes.windll.shell32.ShellExecuteW(None, "runas", "pnputil", f'/add-driver "{inf_path}" /install', None, 1)
+        except Exception as e:
+            print(f"Erro ao disparar instalador de driver: {e}")
+
+    def _open_device_manager(self) -> None:
+        """Abre o Gerenciador de Dispositivos do Windows."""
+        import sys
+        import subprocess
+        if sys.platform == "win32":
+            try:
+                subprocess.Popen(["devmgmt.msc"], shell=True)
+            except Exception:
+                pass

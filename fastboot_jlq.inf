@@ -1,0 +1,48 @@
+[Version]
+Signature           = "$Windows NT$"
+Class               = AndroidUsbDeviceClass
+ClassGuid           = {3F966BD9-FA04-4ec5-991C-D326973B5128}
+Provider            = %ProviderName%
+DriverVer           = 01/01/2026,11.0.0.0
+
+[Manufacturer]
+%ProviderName% = Google, NTx86, NTamd64
+
+[Google.NTx86]
+%BootloaderInterface% = USB_Install, USB\VID_31EF&PID_4EE0
+%BootloaderInterface% = USB_Install, USB\VID_31EF&PID_4EE0&REV_0200
+
+[Google.NTamd64]
+%BootloaderInterface% = USB_Install, USB\VID_31EF&PID_4EE0
+%BootloaderInterface% = USB_Install, USB\VID_31EF&PID_4EE0&REV_0200
+
+[USB_Install]
+Include = winusb.inf
+Needs   = WINUSB.NT
+
+[USB_Install.Services]
+Include    = winusb.inf
+AddService = WinUSB,0x00000002,WinUSB_ServiceInstall
+
+[WinUSB_ServiceInstall]
+DisplayName     = "Android Bootloader Interface"
+ServiceType     = 1
+StartType       = 3
+ErrorControl    = 1
+ServiceBinary   = %12%\WinUSB.sys
+
+[USB_Install.Wdf]
+KmdfService = WINUSB, WinUsb_Install
+
+[WinUsb_Install]
+KmdfLibraryVersion = 1.9
+
+[USB_Install.HW]
+AddReg = Dev_AddReg
+
+[Dev_AddReg]
+HKR,,DeviceInterfaceGUIDs,0x10000,"{F72FE0D4-CBCB-407d-8814-9ED673D0DD6B}"
+
+[Strings]
+ProviderName        = "Google, Inc."
+BootloaderInterface = "Android Bootloader Interface"

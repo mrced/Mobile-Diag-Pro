@@ -76,6 +76,14 @@ def build_executable(onefile: bool = False) -> None:
     else:
         print("Aviso: Diretório de assets não encontrado. O executável pode não ter ícones/recursos visuais.")
 
+    scripts_dir = project_root / "scripts"
+    if scripts_dir.exists():
+        args.append(f'--add-data={scripts_dir};scripts')
+
+    inf_file = project_root / "fastboot_jlq.inf"
+    if inf_file.exists():
+        args.append(f'--add-data={inf_file};.')
+
     # Imports ocultos necessários para Qt e telemetria
     hidden_imports = [
         'pyqtgraph',

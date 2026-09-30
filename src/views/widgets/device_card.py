@@ -121,6 +121,11 @@ class DeviceCard(QFrame):
             DeviceMode.SIDELOAD: ("● Sideload", c.warning),
             DeviceMode.FASTBOOT: ("● Fastboot", "#ff9500"),
             DeviceMode.FASTBOOTD: ("● Fastbootd", "#ff9500"),
+            DeviceMode.DRIVER_MISSING: ("● Driver Ausente (Cód 28)", c.danger),
+            DeviceMode.USB_NO_DEBUGGING: ("● Sem Depuração USB", c.warning),
+            DeviceMode.QUALCOMM_EDL: ("● Modo EDL 9008", c.warning),
+            DeviceMode.SAMSUNG_DOWNLOAD: ("● Download (Odin)", "#ff9500"),
+            DeviceMode.MEDIATEK_BROM: ("● MediaTek BROM", c.warning),
         }
         text, color = mode_config.get(mode, ("● Desconhecido", c.muted))
         self.mode_badge.setText(text)

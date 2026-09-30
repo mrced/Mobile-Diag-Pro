@@ -23,3 +23,7 @@ class DeviceInfo:
     verified_boot_state: str = ''
     encryption_state: str = ''
     usb_state: str = ''
+    driver_missing: bool = False
+    status_message: str = ''
+    hardware_id: str = ''
+    usb_desc: str = ''
