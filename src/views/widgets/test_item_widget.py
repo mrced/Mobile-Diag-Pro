@@ -176,18 +176,50 @@ class TestItemWidget(QFrame):
         # Atualizar detalhes
         if message:
             self.message_label.setText(message)
+            self.message_label.setStyleSheet("font-size: 13px; font-weight: 600; color: #f5f5f7; margin-bottom: 4px;")
             self.message_label.show()
         else:
             self.message_label.hide()
             
         if details:
-            try:
-                formatted_data = json.dumps(details, indent=2, ensure_ascii=False)
-                self.raw_data_label.setText(formatted_data)
+            if isinstance(details, dict):
+                lines = []
+                for k, v in details.items():
+                    if isinstance(v, (dict, list)):
+                        continue
+                    lines.append(f"• <b>{k}:</b> {v}")
+                if lines:
+                    formatted_text = "<br>".join(lines)
+                    self.raw_data_label.setTextFormat(Qt.TextFormat.RichText)
+                    self.raw_data_label.setText(formatted_text)
+                    self.raw_data_label.setStyleSheet("""
+                        QLabel {
+                            background: rgba(255, 255, 255, 0.04);
+                            border: 1px solid rgba(255, 255, 255, 0.08);
+                            padding: 10px 14px;
+                            border-radius: 6px;
+                            font-size: 12px;
+                            line-height: 1.5;
+                        }
+                    """)
+                    self.raw_data_label.show()
+                else:
+                    self.raw_data_label.hide()
+            elif isinstance(details, str) and details.strip():
+                self.raw_data_label.setTextFormat(Qt.TextFormat.PlainText)
+                self.raw_data_label.setText(details)
+                self.raw_data_label.setStyleSheet("""
+                    QLabel {
+                        background: rgba(255, 255, 255, 0.04);
+                        border: 1px solid rgba(255, 255, 255, 0.08);
+                        padding: 10px 14px;
+                        border-radius: 6px;
+                        font-size: 12px;
+                    }
+                """)
                 self.raw_data_label.show()
-            except Exception:
-                self.raw_data_label.setText(str(details))
-                self.raw_data_label.show()
+            else:
+                self.raw_data_label.hide()
         else:
             self.raw_data_label.hide()
             

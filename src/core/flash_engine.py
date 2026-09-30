@@ -152,3 +152,43 @@ class FlashEngine(QObject):
                 
         msg = "Dispositivo reiniciado." if success else "Falha ao reiniciar o dispositivo."
         self.workflow_finished.emit(success, msg)
+
+    def wipe_userdata(self, serial: str) -> None:
+        """Executa a formatação e reset de fábrica (wipe userdata/cache)."""
+        self.status_changed.emit("Iniciando formatação e reset de fábrica (Wipe Userdata)...")
+        self._run_async(self._do_wipe_userdata, serial)
+
+    def _do_wipe_userdata(self, serial: str) -> None:
+        if not self.fastboot_client:
+            from src.core.fastboot_client import FastbootClient
+            self.fastboot_client = FastbootClient()
+        success, msg = self.fastboot_client.wipe_userdata(serial)
+        self.progress_updated.emit(100, "Concluído" if success else "Falhou")
+        self.workflow_finished.emit(success, msg)
+
+    def erase_frp(self, serial: str) -> None:
+        """Tenta apagar a partição FRP (reset da conta Google)."""
+        self.status_changed.emit("Tentando limpar partição FRP (Conta Google)...")
+        self._run_async(self._do_erase_frp, serial)
+
+    def _do_erase_frp(self, serial: str) -> None:
+        if not self.fastboot_client:
+            from src.core.fastboot_client import FastbootClient
+            self.fastboot_client = FastbootClient()
+        success, msg = self.fastboot_client.erase_frp(serial)
+        self.progress_updated.emit(100, "Concluído" if success else "Falhou")
+        self.workflow_finished.emit(success, msg)
+
+    def unlock_bootloader(self, serial: str) -> None:
+        """Executa comando de desbloqueio de bootloader."""
+        self.status_changed.emit("Enviando solicitação de desbloqueio de bootloader...")
+        self._run_async(self._do_unlock_bootloader, serial)
+
+    def _do_unlock_bootloader(self, serial: str) -> None:
+        if not self.fastboot_client:
+            from src.core.fastboot_client import FastbootClient
+            self.fastboot_client = FastbootClient()
+        success, msg = self.fastboot_client.unlock_bootloader(serial)
+        self.progress_updated.emit(100, "Concluído" if success else "Falhou")
+        self.workflow_finished.emit(success, msg)
+

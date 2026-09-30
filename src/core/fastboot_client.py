@@ -252,3 +252,56 @@ class FastbootClient(QObject):
         """
         is_userspace = self.get_var(serial, "is-userspace")
         return is_userspace.lower() == "yes"
+
+    def wipe_userdata(self, serial: str) -> Tuple[bool, str]:
+        """
+        Realiza a formatação completa de dados e cache (Wipe / Reset de Fábrica).
+        Remove bloqueios de PIN, senha ou padrão esquecidos pelo usuário.
+        """
+        success, stdout, stderr = self._run_cmd(["-s", serial, "-w"])
+        output = stderr + stdout
+        if success and "OKAY" in output:
+            return True, "Formatação completa (wipe userdata/cache) executada com sucesso."
+        
+        # Fallback manual para particoes individuais
+        s1, _, e1 = self._run_cmd(["-s", serial, "erase", "userdata"])
+        s2, _, e2 = self._run_cmd(["-s", serial, "erase", "cache"])
+        if s1:
+            return True, "Partição userdata formatada com sucesso via fastboot erase."
+        return False, f"Falha ao formatar dispositivo: {output}\n{e1}"
+
+    def erase_frp(self, serial: str) -> Tuple[bool, str]:
+        """
+        Tenta apagar a partição FRP (Factory Reset Protection / Conta Google).
+        Requer bootloader desbloqueado ou permissão OEM no dispositivo.
+        """
+        success, stdout, stderr = self._run_cmd(["-s", serial, "erase", "frp"])
+        output = stderr + stdout
+        if success and "OKAY" in output:
+            return True, "Partição FRP apagada com sucesso (Conta Google resetada)."
+        return False, f"Não foi possível apagar a partição FRP via Fastboot padrão.\nDetalhes: {output}\nNota: Em aparelhos com bootloader bloqueado, use o método oficial de recuperação ou modo EDL/BROM específico."
+
+    def get_oem_unlock_data(self, serial: str) -> Tuple[bool, str]:
+        """
+        Obtém o token OEM de desbloqueio (comum em aparelhos Motorola).
+        """
+        success, stdout, stderr = self._run_cmd(["-s", serial, "oem", "get_unlock_data"])
+        output = stderr + stdout
+        return success, output
+
+    def get_oem_device_info(self, serial: str) -> Tuple[bool, str]:
+        """
+        Consulta o status detalhado de segurança OEM (Xiaomi, OnePlus, HTC, etc).
+        """
+        success, stdout, stderr = self._run_cmd(["-s", serial, "oem", "device-info"])
+        output = stderr + stdout
+        return success, output
+
+    def reboot_edl(self, serial: str) -> Tuple[bool, str]:
+        """
+        Reinicia o dispositivo para modo Qualcomm EDL (Emergency Download Mode / 9008).
+        """
+        success, stdout, stderr = self._run_cmd(["-s", serial, "oem", "edl"])
+        output = stderr + stdout
+        return success, output
+

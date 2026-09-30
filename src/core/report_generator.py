@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from dataclasses import asdict
 
-from core.diagnostic_engine import DiagnosticReport, TestStatus
+from src.core.diagnostic_engine import DiagnosticReport, TestStatus
 
 
 class ReportGenerator:
@@ -252,7 +252,7 @@ class ReportGenerator:
                 "category": r.category,
                 "status": r.status.value,
                 "details": r.details,
-                "value": r.value,
+                "value": getattr(r, "value", getattr(r, "message", "")),
                 "duration_ms": r.duration_ms
             })
 
