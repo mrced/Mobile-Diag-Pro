@@ -20,6 +20,9 @@ from src.views.main_window import MainWindow
 from src.views.pages.dashboard_page import DashboardPage
 from src.views.pages.diagnostic_page import DiagnosticPage
 from src.views.pages.monitoring_page import MonitoringPage
+from src.viewmodels.flash_vm import FlashViewModel
+from src.views.pages.flash_page import FlashPage
+from src.views.pages.adb_shell_page import ADBShellPage
 
 logger = get_logger(__name__)
 
@@ -41,9 +44,9 @@ def create_placeholder_page(name: str) -> QWidget:
     title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     title_label.setStyleSheet("font-size: 28px; font-weight: bold; background: transparent;")
 
-    subtitle_label = QLabel("Em desenvolvimento — disponível em breve")
+    subtitle_label = QLabel("Em desenvolvimento — disponível na próxima fase")
     subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    subtitle_label.setStyleSheet("font-size: 16px; background: transparent;")
+    subtitle_label.setStyleSheet("font-size: 16px; color: #86868b; background: transparent;")
 
     layout.addStretch()
     layout.addWidget(icon_label)
@@ -89,15 +92,18 @@ def main() -> None:
     # Inicializar as páginas reais
     dashboard_page = DashboardPage()
     diagnostic_page = DiagnosticPage()
+    flash_vm = FlashViewModel()
+    flash_page = FlashPage(flash_vm)
     monitoring_page = MonitoringPage()
+    adb_shell_page = ADBShellPage()
 
     # Criar lista de páginas
     pages = [
         dashboard_page,                               # 0 - Dashboard
         diagnostic_page,                              # 1 - Diagnóstico
-        create_placeholder_page("Flash / Recovery"),  # 2 - Flash
+        flash_page,                                   # 2 - Flash / Recovery
         monitoring_page,                              # 3 - Monitoramento
-        create_placeholder_page("ADB Shell"),         # 4 - ADB Shell
+        adb_shell_page,                               # 4 - ADB Shell & Logcat
         create_placeholder_page("Backup"),            # 5 - Backup
         create_placeholder_page("Configurações"),     # 6 - Configurações
     ]
@@ -105,33 +111,34 @@ def main() -> None:
     # Adicionar páginas ao QStackedWidget
     for page in pages:
         window.stacked_widget.addWidget(page)
-        
+
     # Conectar sinais do DeviceManager
     def on_device_connected(device_info):
         # Atualizar title_bar.status_indicator
         status = f"🟢 {device_info.manufacturer} {device_info.model} ({device_info.mode.name})"
         window.title_bar.status_indicator.setText(status)
-        
-        # Passar device info / serial para as páginas
+
+        # Passar device info / serial para todas as páginas ativas
         dashboard_page.update_device_info(device_info)
-        
-        # Em diagnostic_page nós podemos guardar o serial, ou passar quando rodar.
-        # Adicionaremos um atributo na view_model se necessário, mas para MonitoringPage precisamos:
-        monitoring_page.set_device(device_info.serial)
         diagnostic_page.set_device(device_info.serial)
-        
-        logger.info(f"Dispositivo conectado: {device_info.serial}")
+        flash_page.set_device(device_info.serial)
+        monitoring_page.set_device(device_info.serial)
+        adb_shell_page.set_device(device_info.serial)
+
+        logger.info(f"Dispositivo conectado e propagado: {device_info.serial}")
 
     def on_device_disconnected():
         window.title_bar.status_indicator.setText("🔴 Desconectado")
         dashboard_page.clear()
-        monitoring_page.set_device("")
         diagnostic_page.set_device("")
+        flash_page.set_device("")
+        monitoring_page.set_device("")
+        adb_shell_page.set_device("")
         logger.info("Nenhum dispositivo conectado.")
 
     device_manager.device_connected.connect(on_device_connected)
     device_manager.device_disconnected.connect(on_device_disconnected)
-    
+
     # Iniciar monitoramento do device manager
     device_manager.start_monitoring()
 
@@ -141,10 +148,10 @@ def main() -> None:
 
     # Iniciar loop de eventos
     exit_code = app.exec()
-    
+
     # Limpeza
     device_manager.stop_monitoring()
-    
+
     logger.info(f"Aplicação encerrada com código: {exit_code}")
     sys.exit(exit_code)
 
