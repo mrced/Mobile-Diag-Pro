@@ -104,7 +104,8 @@ class ThemeManager(QObject):
         app = QApplication.instance()
         if not app:
             return
-        qss_path = self._root_dir / 'assets' / 'themes' / f'{self._current_theme}.qss'
+        from src.utils.platform_utils import get_resource_path
+        qss_path = get_resource_path(f"assets/themes/{self._current_theme}.qss")
         if qss_path.exists():
             with open(qss_path, 'r', encoding='utf-8') as f:
                 app.setStyleSheet(f.read())

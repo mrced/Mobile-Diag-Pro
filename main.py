@@ -23,6 +23,8 @@ from src.views.pages.monitoring_page import MonitoringPage
 from src.viewmodels.flash_vm import FlashViewModel
 from src.views.pages.flash_page import FlashPage
 from src.views.pages.adb_shell_page import ADBShellPage
+from src.views.pages.backup_page import BackupPage
+from src.views.pages.settings_page import SettingsPage
 
 logger = get_logger(__name__)
 
@@ -55,6 +57,39 @@ def create_placeholder_page(name: str) -> QWidget:
     layout.addStretch()
 
     return widget
+
+
+def handle_exception(exc_type, exc_value, exc_traceback):
+    """Captura exceções globais para evitar que o .exe feche silenciosamente."""
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+
+    import traceback
+    from datetime import datetime
+    err_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    logger.critical(f"Erro não tratado na aplicação:\n{err_msg}")
+
+    try:
+        from src.utils.platform_utils import get_log_dir
+        crash_file = get_log_dir() / "crash.log"
+        with open(crash_file, "a", encoding="utf-8") as f:
+            f.write(f"\n[{datetime.now().isoformat()}] CRASH:\n{err_msg}\n")
+    except Exception:
+        pass
+
+    try:
+        from PySide6.QtWidgets import QMessageBox
+        if QApplication.instance():
+            QMessageBox.critical(
+                None, 
+                "Mobile-Diag-Pro — Erro Crítico", 
+                f"Ocorreu uma falha inesperada na aplicação:\n\n{exc_value}\n\nDetalhes gravados em crash.log."
+            )
+    except Exception:
+        pass
+
+sys.excepthook = handle_exception
 
 
 def main() -> None:
@@ -96,6 +131,8 @@ def main() -> None:
     flash_page = FlashPage(flash_vm)
     monitoring_page = MonitoringPage()
     adb_shell_page = ADBShellPage()
+    backup_page = BackupPage()
+    settings_page = SettingsPage()
 
     # Criar lista de páginas
     pages = [
@@ -104,8 +141,8 @@ def main() -> None:
         flash_page,                                   # 2 - Flash / Recovery
         monitoring_page,                              # 3 - Monitoramento
         adb_shell_page,                               # 4 - ADB Shell & Logcat
-        create_placeholder_page("Backup"),            # 5 - Backup
-        create_placeholder_page("Configurações"),     # 6 - Configurações
+        backup_page,                                  # 5 - Backup
+        settings_page,                                # 6 - Configurações
     ]
 
     # Adicionar páginas ao QStackedWidget
@@ -124,6 +161,7 @@ def main() -> None:
         flash_page.set_device(device_info.serial)
         monitoring_page.set_device(device_info.serial)
         adb_shell_page.set_device(device_info.serial)
+        backup_page.set_device(device_info.serial)
 
         logger.info(f"Dispositivo conectado e propagado: {device_info.serial}")
 
@@ -134,6 +172,7 @@ def main() -> None:
         flash_page.set_device("")
         monitoring_page.set_device("")
         adb_shell_page.set_device("")
+        backup_page.set_device("")
         logger.info("Nenhum dispositivo conectado.")
 
     device_manager.device_connected.connect(on_device_connected)
