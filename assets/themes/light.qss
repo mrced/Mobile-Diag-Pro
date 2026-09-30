@@ -471,3 +471,44 @@ QScrollArea {
     background-color: #e8e8ed;
     border-bottom: 1px solid #d1d1d6;
 }
+
+/* --- Title Bar Buttons & Custom Controls --- */
+#titleBarBtn {
+    background-color: transparent;
+    color: #86868b;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+}
+#titleBarBtn:hover {
+    background-color: #e5e5ea;
+    color: #1d1d1f;
+}
+#titleBarCloseBtn {
+    background-color: transparent;
+    color: #86868b;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+}
+#titleBarCloseBtn:hover {
+    background-color: #ff3b30;
+    color: #ffffff;
+}
+#titleBarActionBtn {
+    background-color: #ffffff;
+    color: #1d1d1f;
+    border: 1px solid #d1d1d6;
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 500;
+}
+#titleBarActionBtn:hover {
+    background-color: #e5e5ea;
+    border-color: #aeaeb2;
+}
+#sidebarSeparator {
+    background-color: #d1d1d6;
+    border: none;
+}
