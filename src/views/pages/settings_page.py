@@ -3,8 +3,8 @@ Settings Page for Mobile-Diag-Pro.
 """
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, 
                                QRadioButton, QCheckBox, QLineEdit, QFileDialog, QGroupBox, QButtonGroup, QComboBox)
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QDesktopServices, QUrl
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 
 from src.viewmodels.settings_vm import SettingsViewModel
 from src.views.dialogs.about_dialog import AboutDialog

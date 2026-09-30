@@ -65,7 +65,7 @@ class TitleBar(QWidget):
         # Botão GitHub do Desenvolvedor
         self.btn_github = QPushButton("⭐ GitHub", self)
         self.btn_github.setObjectName("titleBarActionBtn")
-        self.btn_github.setToolTip(f"Desenvolvido por mrced — Abrir repositório no GitHub\n{GITHUB_REPO_URL}")
+        self.btn_github.setToolTip(f"Desenvolvido por Onyalan S. Almeida — Abrir repositório no GitHub\n{GITHUB_REPO_URL}")
         self.btn_github.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_github.clicked.connect(self._open_github)
         layout.addWidget(self.btn_github)

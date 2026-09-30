@@ -82,10 +82,10 @@ class Sidebar(QWidget):
         layout.addWidget(footer_line)
         layout.addSpacing(4)
 
-        self.dev_btn = QPushButton("⌥ mrced / GitHub", self)
+        self.dev_btn = QPushButton("⌥ Onyalan S. Almeida", self)
         self.dev_btn.setFixedHeight(36)
         self.dev_btn.setProperty("class", "sidebar-button")
-        self.dev_btn.setToolTip(f"Desenvolvido por mrced — Ver código no GitHub\n{GITHUB_REPO_URL}")
+        self.dev_btn.setToolTip(f"Desenvolvido por Onyalan S. Almeida — Ver código no GitHub\n{GITHUB_REPO_URL}")
         self.dev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.dev_btn.clicked.connect(self._open_developer_github)
         layout.addWidget(self.dev_btn)
@@ -138,6 +138,6 @@ class Sidebar(QWidget):
             # Restaurar texto completo
             for i, (full_text, _, _) in enumerate(self._pages_info):
                 self._nav_buttons[i].setText(full_text)
-            self.dev_btn.setText("⌥ mrced / GitHub")
+            self.dev_btn.setText("⌥ Onyalan S. Almeida")
 
         self.animation.start()

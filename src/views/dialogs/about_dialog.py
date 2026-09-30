@@ -2,8 +2,8 @@
 About Dialog for Mobile-Diag-Pro.
 """
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout
-from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QFont, QDesktopServices, QUrl
+from PySide6.QtCore import Qt, QSize, QUrl
+from PySide6.QtGui import QFont, QDesktopServices
 
 class AboutDialog(QDialog):
     """
@@ -40,7 +40,8 @@ class AboutDialog(QDialog):
         subtitle_label.setStyleSheet("color: gray;")
         layout.addWidget(subtitle_label)
 
-        dev_label = QLabel("Desenvolvido com dedicação por mrced")
+        dev_label = QLabel("Desenvolvido com dedicação por <b>Onyalan S. Almeida</b>")
+        dev_label.setTextFormat(Qt.TextFormat.RichText)
         dev_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(dev_label)
 

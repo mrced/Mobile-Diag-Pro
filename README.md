@@ -105,6 +105,6 @@ O executável final estará pronto dentro da pasta `dist/Mobile-Diag-Pro/`.
 
 ## 👨‍💻 Desenvolvedor
 
-Desenvolvido por **[mrced](https://github.com/mrced)**.
+Desenvolvido por **[Onyalan S. Almeida](https://github.com/mrced/Mobile-Diag-Pro)**.
 
 Se você gostou deste projeto ou ele foi útil para o seu trabalho, não se esqueça de deixar uma **⭐ Star** no repositório!
