@@ -1,9 +1,13 @@
+"""
+Página de Diagnóstico Avançado.
+Interface limpa, compacta e orientada a inspeção técnica de hardware e sistema Android.
+"""
 from typing import Optional, Dict
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QScrollArea, QProgressBar, QComboBox,
-    QCheckBox, QMessageBox, QFrame, QSizePolicy
+    QLineEdit, QMessageBox, QFrame, QSizePolicy
 )
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QFont
@@ -13,38 +17,42 @@ from src.viewmodels.diagnostic_vm import DiagnosticViewModel, TestResult, Diagno
 from src.views.widgets.test_item_widget import TestItemWidget, TestStatus
 from src.views.widgets.action_guide_card import ActionGuideCard
 
+
 class DiagnosticPage(QWidget):
     """
-    Página completa de Diagnóstico Avançado.
+    Página de Diagnóstico Avançado com layout compacto estilo tabela de inspeção.
     """
     
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.view_model = DiagnosticViewModel(self)
         self.test_widgets: Dict[str, TestItemWidget] = {}
+        self.test_categories: Dict[str, str] = {}
+        self.current_serial: str = ""
         
         self._setup_ui()
         self._connect_signals()
-        self._populate_mock_tests() # Para visualização
+        self._populate_tests()
         
     def _setup_ui(self):
         self.main_layout = QVBoxLayout(self)
-        self.main_layout.setContentsMargins(20, 20, 20, 20)
-        self.main_layout.setSpacing(16)
+        self.main_layout.setContentsMargins(20, 16, 20, 16)
+        self.main_layout.setSpacing(12)
         
-        # --- Header Section ---
+        # --- 1. Header Compacto com Métricas de Resumo ---
         self.header_layout = QHBoxLayout()
+        self.header_layout.setSpacing(16)
         
-        # Títulos
+        # Título e Subtítulo
         self.title_layout = QVBoxLayout()
-        self.title_label = QLabel("Diagnóstico Avançado")
-        font_title = self.title_label.font()
-        font_title.setPointSize(24)
-        font_title.setBold(True)
-        self.title_label.setFont(font_title)
+        self.title_layout.setSpacing(2)
         
-        self.subtitle_label = QLabel("Bateria, Hardware, Sensores, Desempenho e Integridade")
-        self.subtitle_label.setStyleSheet("color: gray;")
+        self.title_label = QLabel("Diagnóstico Avançado de Hardware & Sistema")
+        self.title_label.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+        self.title_label.setStyleSheet("color: #f5f5f7;")
+        
+        self.subtitle_label = QLabel("65 verificações completas de bateria, processador, RAM, sensores e segurança")
+        self.subtitle_label.setStyleSheet("color: #98989d; font-size: 13px;")
         
         self.title_layout.addWidget(self.title_label)
         self.title_layout.addWidget(self.subtitle_label)
@@ -52,20 +60,18 @@ class DiagnosticPage(QWidget):
         
         self.header_layout.addStretch()
         
-        # Estatísticas (Summary Bar)
+        # Badges de Resumo
         self.stats_layout = QHBoxLayout()
+        self.stats_layout.setSpacing(8)
         
         self.score_label = QLabel("Saúde: 100%")
-        font_score = self.score_label.font()
-        font_score.setPointSize(16)
-        font_score.setBold(True)
-        self.score_label.setFont(font_score)
-        self.score_label.setStyleSheet("color: #198754;")
+        self.score_label.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        self.score_label.setStyleSheet("color: #30d158; padding: 4px 8px;")
         
-        self.lbl_passed = self._create_badge("Aprovados: 0", "#198754")
-        self.lbl_warning = self._create_badge("Atenção: 0", "#fd7e14")
-        self.lbl_failed = self._create_badge("Falhas: 0", "#dc3545")
-        self.lbl_total = self._create_badge("Total: 0", "#6c757d")
+        self.lbl_passed = self._create_badge("✓ 0 Aprovados", "#30d158")
+        self.lbl_warning = self._create_badge("⚠️ 0 Atenção", "#ff9f0a")
+        self.lbl_failed = self._create_badge("✗ 0 Falhas", "#ff453a")
+        self.lbl_total = self._create_badge("Total: 0", "#636366")
         
         self.stats_layout.addWidget(self.score_label)
         self.stats_layout.addWidget(self.lbl_passed)
@@ -76,90 +82,208 @@ class DiagnosticPage(QWidget):
         self.header_layout.addLayout(self.stats_layout)
         self.main_layout.addLayout(self.header_layout)
         
-        # --- Guia de Ações & Prontidão ---
+        # --- 2. Guia de Ações (Aparece SOMENTE se o aparelho precisar de intervenção) ---
         self.action_guide = ActionGuideCard(self)
+        self.action_guide.hide()
         self.main_layout.addWidget(self.action_guide)
         
-        # --- Controls Section ---
-        self.controls_layout = QHBoxLayout()
+        # --- 3. Barra de Ferramentas Unificada (Single-Row Toolbar) ---
+        toolbar_frame = QFrame()
+        toolbar_frame.setStyleSheet("""
+            QFrame {
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+            }
+        """)
+        toolbar_layout = QHBoxLayout(toolbar_frame)
+        toolbar_layout.setContentsMargins(10, 6, 10, 6)
+        toolbar_layout.setSpacing(10)
         
-        self.btn_run_all = QPushButton("Executar Todos")
-        self.btn_run_all.setStyleSheet("background-color: #0d6efd; color: white; padding: 8px 16px; border-radius: 4px; font-weight: bold;")
+        self.btn_run_all = QPushButton("▶ Iniciar Diagnóstico")
+        self.btn_run_all.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_run_all.setStyleSheet("""
+            QPushButton {
+                background-color: #0a84ff;
+                color: white;
+                font-weight: bold;
+                font-size: 13px;
+                padding: 6px 16px;
+                border-radius: 6px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #0071e3;
+            }
+            QPushButton:disabled {
+                background-color: rgba(10, 132, 255, 0.3);
+                color: #8e8e93;
+            }
+        """)
+        toolbar_layout.addWidget(self.btn_run_all)
         
-        self.btn_run_selected = QPushButton("Executar Selecionados")
-        self.btn_run_selected.setStyleSheet("padding: 8px 16px; border-radius: 4px;")
-        
-        self.btn_stop = QPushButton("Parar")
-        self.btn_stop.setStyleSheet("background-color: #dc3545; color: white; padding: 8px 16px; border-radius: 4px;")
+        self.btn_stop = QPushButton("⏹ Parar")
         self.btn_stop.setEnabled(False)
+        self.btn_stop.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_stop.setStyleSheet("""
+            QPushButton {
+                background-color: #ff453a;
+                color: white;
+                font-weight: bold;
+                font-size: 13px;
+                padding: 6px 14px;
+                border-radius: 6px;
+                border: none;
+            }
+            QPushButton:disabled {
+                background-color: rgba(255, 69, 58, 0.2);
+                color: #636366;
+            }
+        """)
+        toolbar_layout.addWidget(self.btn_stop)
         
-        self.btn_export = QPushButton("Exportar Relatório")
-        self.btn_export.setStyleSheet("padding: 8px 16px; border-radius: 4px;")
+        # Divisor
+        div = QLabel("|")
+        div.setStyleSheet("color: rgba(255, 255, 255, 0.2); border: none;")
+        toolbar_layout.addWidget(div)
         
-        self.btn_toggle_expand = QPushButton("Expandir Todos")
-        self.btn_toggle_expand.setStyleSheet("padding: 8px 16px; border-radius: 4px;")
-        self.btn_toggle_expand.clicked.connect(self._toggle_expand_all)
-
-        self.controls_layout.addWidget(self.btn_run_all)
-        self.controls_layout.addWidget(self.btn_run_selected)
-        self.controls_layout.addWidget(self.btn_stop)
-        self.controls_layout.addWidget(self.btn_toggle_expand)
-        self.controls_layout.addStretch()
-        self.controls_layout.addWidget(self.btn_export)
-        
-        self.main_layout.addLayout(self.controls_layout)
-        
-        # --- Filter Section ---
-        self.filter_layout = QHBoxLayout()
-        
+        # Filtro de Categoria
+        toolbar_layout.addWidget(QLabel("Categoria:"))
         self.filter_combo = QComboBox()
-        self.filter_combo.addItems(["Todos", "Bateria", "CPU & RAM", "Armazenamento", "Sensores", "Térmico", "Sistema", "Rede"])
+        self.filter_combo.addItems([
+            "Todas as Categorias", "Bateria", "Processador & RAM", 
+            "Armazenamento", "Display", "Sensores", "Térmico", 
+            "Rede & Chip", "Sistema & Segurança", "Aplicativos", 
+            "Processos", "Conectividade USB"
+        ])
+        self.filter_combo.setStyleSheet("""
+            QComboBox {
+                padding: 4px 10px;
+                border-radius: 6px;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                background-color: rgba(0, 0, 0, 0.2);
+                color: #f5f5f7;
+                font-size: 12px;
+                min-width: 140px;
+            }
+        """)
+        self.filter_combo.currentIndexChanged.connect(self._on_filter_changed)
+        toolbar_layout.addWidget(self.filter_combo)
         
-        self.chk_select_all = QCheckBox("Selecionar Todos")
-        self.chk_select_all.setChecked(True)
+        # Campo de Busca
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("🔍 Filtrar teste...")
+        self.search_input.setStyleSheet("""
+            QLineEdit {
+                padding: 4px 10px;
+                border-radius: 6px;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                background-color: rgba(0, 0, 0, 0.2);
+                color: #f5f5f7;
+                font-size: 12px;
+                min-width: 130px;
+            }
+        """)
+        self.search_input.textChanged.connect(self._on_filter_changed)
+        toolbar_layout.addWidget(self.search_input)
         
-        self.filter_layout.addWidget(QLabel("Categoria:"))
-        self.filter_layout.addWidget(self.filter_combo)
-        self.filter_layout.addStretch()
-        self.filter_layout.addWidget(self.chk_select_all)
+        toolbar_layout.addStretch()
         
-        self.main_layout.addLayout(self.filter_layout)
+        self.btn_export = QPushButton("💾 Exportar Relatório")
+        self.btn_export.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_export.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.08);
+                color: #f5f5f7;
+                font-size: 12px;
+                font-weight: 600;
+                padding: 6px 14px;
+                border-radius: 6px;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.15);
+            }
+        """)
+        toolbar_layout.addWidget(self.btn_export)
         
-        # --- Test List Section ---
+        self.main_layout.addWidget(toolbar_frame)
+        
+        # --- 4. Cabeçalho de Colunas da Tabela de Testes ---
+        cols_frame = QFrame()
+        cols_frame.setFixedHeight(24)
+        cols_frame.setStyleSheet("background: transparent; border: none;")
+        cols_layout = QHBoxLayout(cols_frame)
+        cols_layout.setContentsMargins(14, 0, 14, 0)
+        cols_layout.setSpacing(12)
+        
+        lbl_col_name = QLabel("TESTE / COMPONENTE")
+        lbl_col_name.setStyleSheet("color: #8e8e93; font-size: 11px; font-weight: bold; border: none;")
+        lbl_col_name.setFixedWidth(246)
+        
+        lbl_col_reading = QLabel("MEDIÇÃO & ACHADO TÉCNICO (TEMPO REAL)")
+        lbl_col_reading.setStyleSheet("color: #8e8e93; font-size: 11px; font-weight: bold; border: none;")
+        
+        lbl_col_status = QLabel("STATUS")
+        lbl_col_status.setStyleSheet("color: #8e8e93; font-size: 11px; font-weight: bold; border: none;")
+        lbl_col_status.setFixedWidth(85)
+        lbl_col_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        cols_layout.addWidget(lbl_col_name)
+        cols_layout.addWidget(lbl_col_reading, 1)
+        cols_layout.addWidget(lbl_col_status)
+        self.main_layout.addWidget(cols_frame)
+        
+        # --- 5. Lista de Testes com Rolagem Suave ---
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setStyleSheet("background: transparent;")
         
         self.list_widget = QWidget()
+        self.list_widget.setStyleSheet("background: transparent;")
         self.list_layout = QVBoxLayout(self.list_widget)
         self.list_layout.setContentsMargins(0, 0, 0, 0)
-        self.list_layout.setSpacing(10)
+        self.list_layout.setSpacing(4) # Espaçamento compacto!
         self.list_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         
         self.scroll_area.setWidget(self.list_widget)
-        self.main_layout.addWidget(self.scroll_area, 1) # proportion 1 para expandir
+        self.main_layout.addWidget(self.scroll_area, 1)
         
-        # --- Progress Section ---
+        # --- 6. Barra de Progresso ---
         self.progress_layout = QHBoxLayout()
+        self.progress_layout.setSpacing(12)
+        
         self.progress_label = QLabel("Pronto")
+        self.progress_label.setStyleSheet("color: #98989d; font-size: 12px; min-width: 250px;")
+        
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFixedHeight(10)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                background-color: rgba(255, 255, 255, 0.08);
+                border-radius: 5px;
+            }
+            QProgressBar::chunk {
+                background-color: #0a84ff;
+                border-radius: 5px;
+            }
+        """)
         
         self.progress_layout.addWidget(self.progress_label)
         self.progress_layout.addWidget(self.progress_bar, 1)
-        
         self.main_layout.addLayout(self.progress_layout)
 
     def _create_badge(self, text: str, color: str) -> QLabel:
         lbl = QLabel(text)
-        lbl.setStyleSheet(f"background-color: {color}; color: white; padding: 4px 8px; border-radius: 12px; font-weight: bold;")
+        lbl.setStyleSheet(f"background-color: rgba(255, 255, 255, 0.05); color: {color}; padding: 4px 10px; border-radius: 8px; font-weight: bold; font-size: 12px; border: 1px solid rgba(255, 255, 255, 0.08);")
         return lbl
 
     def _connect_signals(self):
         self.btn_run_all.clicked.connect(self._on_run_all_clicked)
-        self.btn_run_selected.clicked.connect(self._on_run_selected_clicked)
         self.btn_stop.clicked.connect(self.view_model.stop_diagnostic)
         self.btn_export.clicked.connect(self._on_export_clicked)
         
@@ -170,8 +294,8 @@ class DiagnosticPage(QWidget):
         self.view_model.error_occurred.connect(self._on_error)
         self.view_model.stats_updated.connect(self._update_stats)
 
-    def _populate_mock_tests(self):
-        """Preenche a lista com todos os 50+ testes do DiagnosticEngine."""
+    def _populate_tests(self):
+        """Preenche a lista com todos os 65 testes organizados com nomes e ícones."""
         from src.core.diagnostic_engine import DiagnosticEngine
         
         category_icons = {
@@ -202,25 +326,62 @@ class DiagnosticPage(QWidget):
             widget = TestItemWidget(tid, name, desc, icon)
             self.list_layout.addWidget(widget)
             self.test_widgets[tid] = widget
+            self.test_categories[tid] = cat
             self.view_model.available_tests.append(tid)
 
+    def _on_filter_changed(self):
+        cat_filter = self.filter_combo.currentText()
+        cat_map = {
+            "Bateria": "battery",
+            "Processador & RAM": ("cpu", "memory"),
+            "Armazenamento": "storage",
+            "Display": "display",
+            "Sensores": "sensors",
+            "Térmico": "thermal",
+            "Rede & Chip": "network",
+            "Sistema & Segurança": "system",
+            "Aplicativos": "apps",
+            "Processos": "processes",
+            "Conectividade USB": "connectivity",
+        }
+        target_cats = cat_map.get(cat_filter, None)
+        query = self.search_input.text().strip().lower()
+
+        for tid, widget in self.test_widgets.items():
+            cat = self.test_categories.get(tid, "")
+            matches_cat = True
+            if target_cats:
+                if isinstance(target_cats, tuple):
+                    matches_cat = cat in target_cats
+                else:
+                    matches_cat = cat == target_cats
+            
+            matches_query = True
+            if query:
+                matches_query = (
+                    query in widget.name.lower() or 
+                    query in widget.description.lower() or 
+                    query in widget.result_label.text().lower()
+                )
+
+            widget.setVisible(matches_cat and matches_query)
+
     def _update_stats(self, passed: int, warning: int, failed: int, total: int):
-        self.lbl_passed.setText(f"Aprovados: {passed}")
-        self.lbl_warning.setText(f"Atenção: {warning}")
-        self.lbl_failed.setText(f"Falhas: {failed}")
+        self.lbl_passed.setText(f"✓ {passed} Aprovados")
+        self.lbl_warning.setText(f"⚠️ {warning} Atenção")
+        self.lbl_failed.setText(f"✗ {failed} Falhas")
         self.lbl_total.setText(f"Total: {total}")
         
         if total > 0:
             score = max(0, int(((passed + (warning * 0.5)) / total) * 100))
             self.score_label.setText(f"Saúde: {score}%")
             if score >= 80:
-                self.score_label.setStyleSheet("color: #198754;") # Verde
+                self.score_label.setStyleSheet("color: #30d158; padding: 4px 8px;")
             elif score >= 50:
-                self.score_label.setStyleSheet("color: #fd7e14;") # Laranja
+                self.score_label.setStyleSheet("color: #ff9f0a; padding: 4px 8px;")
             else:
-                self.score_label.setStyleSheet("color: #dc3545;") # Vermelho
+                self.score_label.setStyleSheet("color: #ff453a; padding: 4px 8px;")
 
-        # ... o resto continua igual ...
     def set_device(self, serial: str):
         self.current_serial = serial
 
@@ -229,16 +390,21 @@ class DiagnosticPage(QWidget):
         mode = getattr(device_info, 'mode', DeviceMode.UNKNOWN)
         if mode == DeviceMode.ADB_NORMAL:
             self.btn_run_all.setEnabled(True)
-            self.btn_run_selected.setEnabled(True)
+            self.action_guide.hide()
+            m = getattr(device_info, 'model', '')
+            man = getattr(device_info, 'manufacturer', '')
+            self.subtitle_label.setText(f"Aparelho conectado: {man} {m} (ADB Operacional) • 65 rotinas de hardware liberadas")
         else:
             self.btn_run_all.setEnabled(False)
-            self.btn_run_selected.setEnabled(False)
+            self.action_guide.show()
+            self.subtitle_label.setText("Aguardando dispositivo pronto para análise...")
 
     def clear(self):
         self.current_serial = ""
         self.action_guide.set_disconnected()
+        self.action_guide.show()
         self.btn_run_all.setEnabled(False)
-        self.btn_run_selected.setEnabled(False)
+        self.subtitle_label.setText("Conecte um dispositivo Android via USB para iniciar")
 
     @Slot()
     def _on_run_all_clicked(self):
@@ -251,17 +417,6 @@ class DiagnosticPage(QWidget):
         self.view_model.start_diagnostic(serial_to_use, self.view_model.available_tests)
 
     @Slot()
-    def _on_run_selected_clicked(self):
-        self._on_run_all_clicked()
-
-    @Slot()
-    def _toggle_expand_all(self):
-        is_expanding = self.btn_toggle_expand.text() == "Expandir Todos"
-        for widget in self.test_widgets.values():
-            widget.set_expanded(is_expanding)
-        self.btn_toggle_expand.setText("Recolher Todos" if is_expanding else "Expandir Todos")
-
-    @Slot()
     def _on_export_clicked(self):
         path = self.view_model.export_report()
         if path:
@@ -270,11 +425,10 @@ class DiagnosticPage(QWidget):
     @Slot(int)
     def _on_diagnostic_started(self, total: int):
         self.btn_run_all.setEnabled(False)
-        self.btn_run_selected.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.progress_bar.setRange(0, total)
         self.progress_bar.setValue(0)
-        self.progress_label.setText("Iniciando...")
+        self.progress_label.setText("Iniciando diagnósticos de hardware...")
 
     @Slot(int, str)
     def _on_test_progress(self, index: int, test_id: str):
@@ -282,7 +436,7 @@ class DiagnosticPage(QWidget):
         widget = self.test_widgets.get(test_id)
         if widget:
             widget.set_status(TestStatus.RUNNING)
-            self.progress_label.setText(f"Executando {widget.name}...")
+            self.progress_label.setText(f"Analisando: {widget.name} ({index+1}/{len(self.test_widgets)})...")
 
     @Slot(object)
     def _on_test_completed(self, result: TestResult):
@@ -293,16 +447,14 @@ class DiagnosticPage(QWidget):
     @Slot(object)
     def _on_diagnostic_finished(self, report: DiagnosticReport):
         self.btn_run_all.setEnabled(True)
-        self.btn_run_selected.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.progress_bar.setValue(self.progress_bar.maximum())
-        self.progress_label.setText("Concluído")
-        QMessageBox.information(self, "Diagnóstico", "Diagnóstico finalizado com sucesso.")
+        self.progress_label.setText(f"Diagnóstico concluído ({report.passed_count} aprovados, {report.warning_count} alertas, {report.failed_count} falhas)")
+        QMessageBox.information(self, "Diagnóstico Concluído", f"Análise completa finalizada com sucesso.\n\nScore de Saúde: {report.overall_score}%\nAprovados: {report.passed_count}\nAlertas: {report.warning_count}\nFalhas: {report.failed_count}")
 
     @Slot(str)
     def _on_error(self, message: str):
         self.btn_run_all.setEnabled(True)
-        self.btn_run_selected.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        self.progress_label.setText("Erro / Cancelado")
-        QMessageBox.warning(self, "Erro", message)
+        self.progress_label.setText("Diagnóstico cancelado ou com erro")
+        QMessageBox.warning(self, "Erro no Diagnóstico", message)

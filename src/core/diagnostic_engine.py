@@ -57,94 +57,94 @@ class DiagnosticEngine:
         self._cache_time: float = 0.0
 
         self._tests_metadata = [
-            # Battery
-            {"id": "batt_health", "name": "Battery Health", "category": "battery", "desc": "Verifica a saúde da bateria via dumpsys."},
-            {"id": "batt_level", "name": "Battery Level", "category": "battery", "desc": "Nível de carga da bateria."},
-            {"id": "batt_voltage", "name": "Battery Voltage", "category": "battery", "desc": "Tensão da bateria em mV."},
-            {"id": "batt_temp", "name": "Battery Temperature", "category": "battery", "desc": "Temperatura atual da bateria."},
-            {"id": "batt_capacity", "name": "Capacity (Real vs Design)", "category": "battery", "desc": "Comparação de capacidade de fábrica e atual."},
-            {"id": "batt_wear", "name": "Battery Wear Level", "category": "battery", "desc": "Porcentagem de degradação estimada."},
-            {"id": "batt_cycles", "name": "Cycle Count", "category": "battery", "desc": "Contagem de ciclos de carga (se suportado)."},
-            {"id": "batt_charger", "name": "Charger Type", "category": "battery", "desc": "Tipo do carregador conectado (AC, USB, Wireless)."},
+            # Bateria
+            {"id": "batt_health", "name": "Saúde da Bateria", "category": "battery", "desc": "Verifica a saúde química e integridade da bateria."},
+            {"id": "batt_level", "name": "Nível de Carga", "category": "battery", "desc": "Nível atual de carga da bateria (%)."},
+            {"id": "batt_voltage", "name": "Tensão da Bateria", "category": "battery", "desc": "Tensão elétrica nominal da célula em mV e Volts."},
+            {"id": "batt_temp", "name": "Temperatura da Bateria", "category": "battery", "desc": "Temperatura térmica atual da célula em °C."},
+            {"id": "batt_capacity", "name": "Capacidade de Carga", "category": "battery", "desc": "Capacidade nominal e residual estimada da bateria."},
+            {"id": "batt_wear", "name": "Desgaste da Bateria", "category": "battery", "desc": "Estimativa de desgaste e retenção de carga."},
+            {"id": "batt_cycles", "name": "Ciclos de Carga", "category": "battery", "desc": "Contagem de ciclos de carga gerenciada pelo PMIC."},
+            {"id": "batt_charger", "name": "Fonte de Alimentação", "category": "battery", "desc": "Tipo de carregador e porta USB conectada."},
 
-            # CPU
-            {"id": "cpu_arch", "name": "Architecture", "category": "cpu", "desc": "Arquitetura do processador (ex. aarch64)."},
-            {"id": "cpu_cores", "name": "Core Count", "category": "cpu", "desc": "Número total de núcleos físicos/lógicos."},
-            {"id": "cpu_online", "name": "Online Cores", "category": "cpu", "desc": "Núcleos ativos no momento."},
-            {"id": "cpu_freq", "name": "Max/Min Frequency", "category": "cpu", "desc": "Frequências máxima e mínima de operação."},
-            {"id": "cpu_throttle", "name": "Throttling Check", "category": "cpu", "desc": "Verifica se há restrição térmica ativa no CPU."},
-            {"id": "cpu_load", "name": "CPU Load", "category": "cpu", "desc": "Carga atual geral de processamento."},
+            # Processador (CPU)
+            {"id": "cpu_arch", "name": "Arquitetura do CPU", "category": "cpu", "desc": "Arquitetura e conjunto de instruções (ex. ARM64-v8a)."},
+            {"id": "cpu_cores", "name": "Quantidade de Núcleos", "category": "cpu", "desc": "Número total de núcleos físicos e lógicos da CPU."},
+            {"id": "cpu_online", "name": "Núcleos em Operação", "category": "cpu", "desc": "Núcleos ativos no escalonador de processos."},
+            {"id": "cpu_freq", "name": "Frequências da CPU", "category": "cpu", "desc": "Faixa de frequências operacionais dos núcleos."},
+            {"id": "cpu_throttle", "name": "Throttling Térmico", "category": "cpu", "desc": "Verificação de redução forçada de clock por calor."},
+            {"id": "cpu_load", "name": "Carga de Processamento", "category": "cpu", "desc": "Utilização instantânea dos núcleos de processamento."},
 
-            # Memory
-            {"id": "mem_total", "name": "Total RAM", "category": "memory", "desc": "Memória RAM total instalada."},
-            {"id": "mem_free", "name": "Free RAM", "category": "memory", "desc": "Memória livre no sistema."},
-            {"id": "mem_avail", "name": "Available RAM", "category": "memory", "desc": "Memória disponível considerando buffers/cache."},
-            {"id": "mem_cache", "name": "Cached/Buffers", "category": "memory", "desc": "Memória em cache/buffers."},
-            {"id": "mem_zram", "name": "ZRAM Enabled", "category": "memory", "desc": "Status de compactação de RAM em zRAM."},
-            {"id": "mem_swap", "name": "Swap Usage", "category": "memory", "desc": "Uso de swap / virtual memory."},
-            {"id": "mem_oom", "name": "OOM Kills Check", "category": "memory", "desc": "Verificação de histórico de processos terminados por falta de memória."},
+            # Memória RAM
+            {"id": "mem_total", "name": "Memória RAM Total", "category": "memory", "desc": "Total de memória RAM física instalada."},
+            {"id": "mem_free", "name": "Memória RAM Livre", "category": "memory", "desc": "Quantidade de RAM livre sem alocação imediata."},
+            {"id": "mem_avail", "name": "Memória RAM Disponível", "category": "memory", "desc": "Memória utilizável considerando buffers e cache."},
+            {"id": "mem_cache", "name": "Memória em Cache", "category": "memory", "desc": "Memória alocada para cache de páginas e buffers."},
+            {"id": "mem_zram", "name": "Compactação zRAM", "category": "memory", "desc": "Status de memória compactada no kernel."},
+            {"id": "mem_swap", "name": "Memória Virtual / Swap", "category": "memory", "desc": "Alocação e utilização de memória de troca (swap)."},
+            {"id": "mem_oom", "name": "Estabilidade OOM Kills", "category": "memory", "desc": "Verificação de processos encerrados por falta de memória."},
 
-            # Storage
-            {"id": "sto_data", "name": "Data Partition Space", "category": "storage", "desc": "Armazenamento livre em userdata."},
-            {"id": "sto_sys", "name": "System Partition", "category": "storage", "desc": "Espaço na partição de sistema."},
-            {"id": "sto_health", "name": "Storage Health/Read-Only", "category": "storage", "desc": "Verifica se a montagem está read-only (sinal de corrupção)."},
-            {"id": "sto_io", "name": "I/O Latency", "category": "storage", "desc": "Verificação de tempo de resposta I/O básico."},
-            {"id": "sto_sd", "name": "SDCard Presence", "category": "storage", "desc": "Identificação de cartão MicroSD externo."},
+            # Armazenamento
+            {"id": "sto_data", "name": "Armazenamento Interno", "category": "storage", "desc": "Espaço total e livre na partição do usuário (userdata)."},
+            {"id": "sto_sys", "name": "Partição de Sistema", "category": "storage", "desc": "Espaço e integridade da imagem do sistema Android."},
+            {"id": "sto_health", "name": "Integridade de Montagem", "category": "storage", "desc": "Verifica se as partições estão montadas com leitura e escrita."},
+            {"id": "sto_io", "name": "Latência de Leitura I/O", "category": "storage", "desc": "Tempo de resposta do barramento de armazenamento UFS/eMMC."},
+            {"id": "sto_sd", "name": "Cartão MicroSD Externo", "category": "storage", "desc": "Detecção e integridade do slot de cartão de memória."},
 
-            # Display
-            {"id": "disp_res", "name": "Resolution", "category": "display", "desc": "Resolução física/lógica da tela."},
-            {"id": "disp_dpi", "name": "Density DPI", "category": "display", "desc": "Densidade de pixels do visor."},
-            {"id": "disp_refresh", "name": "Refresh Rate", "category": "display", "desc": "Taxa de atualização de tela atual."},
-            {"id": "disp_bright", "name": "Brightness", "category": "display", "desc": "Nível de brilho configurado."},
-            {"id": "disp_state", "name": "Screen State", "category": "display", "desc": "Estado de energia da tela (ON, OFF, DOZE)."},
+            # Tela / Display
+            {"id": "disp_res", "name": "Resolução de Tela", "category": "display", "desc": "Resolução física e proporção de aspecto do display."},
+            {"id": "disp_dpi", "name": "Densidade de Pixels (DPI)", "category": "display", "desc": "Densidade de pontos por polegada do painel."},
+            {"id": "disp_refresh", "name": "Taxa de Atualização", "category": "display", "desc": "Frequência de varredura do visor (Hz)."},
+            {"id": "disp_bright", "name": "Nível de Brilho", "category": "display", "desc": "Brilho configurado no painel da tela."},
+            {"id": "disp_state", "name": "Estado de Energia da Tela", "category": "display", "desc": "Estado de ativação do painel (Ligado/Em espera)."},
 
-            # Sensors
-            {"id": "sen_accel", "name": "Accelerometer", "category": "sensors", "desc": "Verificação do acelerômetro."},
-            {"id": "sen_gyro", "name": "Gyroscope", "category": "sensors", "desc": "Verificação do giroscópio."},
-            {"id": "sen_prox", "name": "Proximity", "category": "sensors", "desc": "Verificação do sensor de proximidade."},
-            {"id": "sen_light", "name": "Light Sensor", "category": "sensors", "desc": "Verificação do sensor de luminosidade ambiental."},
-            {"id": "sen_mag", "name": "Magnetometer", "category": "sensors", "desc": "Verificação da bússola/magnetômetro."},
-            {"id": "sen_bar", "name": "Barometer", "category": "sensors", "desc": "Verificação do barômetro."},
+            # Sensores
+            {"id": "sen_accel", "name": "Acelerômetro", "category": "sensors", "desc": "Presença e resposta do sensor de movimento e inclinação."},
+            {"id": "sen_gyro", "name": "Giroscópio", "category": "sensors", "desc": "Sensor de rotação espacial em 3 eixos."},
+            {"id": "sen_prox", "name": "Sensor de Proximidade", "category": "sensors", "desc": "Detecção de aproximação para chamadas."},
+            {"id": "sen_light", "name": "Sensor de Luminosidade", "category": "sensors", "desc": "Medição de iluminação ambiente."},
+            {"id": "sen_mag", "name": "Bússola / Magnetômetro", "category": "sensors", "desc": "Sensor de campo magnético e orientação."},
+            {"id": "sen_bar", "name": "Barômetro", "category": "sensors", "desc": "Sensor de pressão atmosférica e altitude."},
 
-            # Thermal
-            {"id": "therm_cpu", "name": "CPU Temp", "category": "thermal", "desc": "Temperatura de zonas térmicas do CPU."},
-            {"id": "therm_batt", "name": "Battery Temp", "category": "thermal", "desc": "Leitura redundante de temperatura da bateria."},
-            {"id": "therm_gpu", "name": "GPU Temp", "category": "thermal", "desc": "Temperatura do acelerador gráfico."},
-            {"id": "therm_hal", "name": "Thermal Hal Status", "category": "thermal", "desc": "Estado da camada de hardware térmico / nível de throttling."},
+            # Térmico
+            {"id": "therm_cpu", "name": "Temperatura do CPU", "category": "thermal", "desc": "Leitura das zonas térmicas do processador."},
+            {"id": "therm_batt", "name": "Temperatura da Bateria", "category": "thermal", "desc": "Sensor térmico da placa de gerenciamento de bateria."},
+            {"id": "therm_gpu", "name": "Temperatura da GPU", "category": "thermal", "desc": "Sensor térmico do processador gráfico."},
+            {"id": "therm_hal", "name": "HAL Térmico & Throttling", "category": "thermal", "desc": "Nível de contenção de temperatura do firmware."},
 
-            # Network
-            {"id": "net_wifi", "name": "WiFi Connected", "category": "network", "desc": "Status de conexão sem fio."},
-            {"id": "net_wifi_sig", "name": "WiFi Signal (dBm)", "category": "network", "desc": "Potência do sinal WiFi conectada."},
-            {"id": "net_wifi_spd", "name": "Link Speed", "category": "network", "desc": "Velocidade do link WiFi."},
-            {"id": "net_sim", "name": "SIM State", "category": "network", "desc": "Presença e estado do chip SIM."},
-            {"id": "net_cell_sig", "name": "Cellular Signal", "category": "network", "desc": "Status de recepção da rede celular."},
-            {"id": "net_data", "name": "Mobile Data", "category": "network", "desc": "Status de tráfego de dados móveis."},
+            # Conectividade e Rede
+            {"id": "net_wifi", "name": "Interface Wi-Fi", "category": "network", "desc": "Status da placa sem fio e conexão atual."},
+            {"id": "net_wifi_sig", "name": "Sinal Wi-Fi (dBm)", "category": "network", "desc": "Potência do sinal de recepção do ponto de acesso."},
+            {"id": "net_wifi_spd", "name": "Velocidade de Link Wi-Fi", "category": "network", "desc": "Velocidade negociada com o roteador (Mbps)."},
+            {"id": "net_sim", "name": "Status do Chip SIM", "category": "network", "desc": "Detecção do chip da operadora e slot SIM."},
+            {"id": "net_cell_sig", "name": "Sinal de Rede Celular", "category": "network", "desc": "Intensidade da antena de telefonia móvel."},
+            {"id": "net_data", "name": "Dados Móveis (4G/5G)", "category": "network", "desc": "Status de tráfego de dados pela rede da operadora."},
 
-            # System
-            {"id": "sys_os", "name": "Android Version", "category": "system", "desc": "Versão do SO e SDK."},
-            {"id": "sys_patch", "name": "Security Patch Date", "category": "system", "desc": "Nível de atualização de segurança."},
-            {"id": "sys_bootloader", "name": "Bootloader Status", "category": "system", "desc": "Estado de bloqueio do bootloader."},
-            {"id": "sys_verified", "name": "Verified Boot State", "category": "system", "desc": "Estado do dm-verity e boot verificado."},
-            {"id": "sys_encrypt", "name": "Encryption State", "category": "system", "desc": "Status da criptografia (FBE/FDE)."},
-            {"id": "sys_knox", "name": "Knox/Warranty Bit", "category": "system", "desc": "Indicador de violação de garantia (para Samsung, etc.)."},
-            {"id": "sys_uptime", "name": "Uptime", "category": "system", "desc": "Tempo desde a última reinicialização."},
+            # Sistema e Segurança
+            {"id": "sys_os", "name": "Versão do Android & API", "category": "system", "desc": "Versão do sistema operacional e nível de API."},
+            {"id": "sys_patch", "name": "Patch de Segurança", "category": "system", "desc": "Data da atualização de segurança instalada."},
+            {"id": "sys_bootloader", "name": "Bloqueio do Bootloader", "category": "system", "desc": "Estado de trava de segurança do bootloader."},
+            {"id": "sys_verified", "name": "Boot Verificado (AVB)", "category": "system", "desc": "Integridade de boot seguro (dm-verity / AVB)."},
+            {"id": "sys_encrypt", "name": "Criptografia de Dados", "category": "system", "desc": "Status da criptografia baseada em arquivo (FBE)."},
+            {"id": "sys_knox", "name": "Garantia / Status OEM", "category": "system", "desc": "Verificação de violação de garantia ou flags OEM."},
+            {"id": "sys_uptime", "name": "Tempo em Atividade (Uptime)", "category": "system", "desc": "Tempo decorrido desde a última inicialização."},
 
-            # Apps
-            {"id": "app_3rd", "name": "Third-Party App Count", "category": "apps", "desc": "Total de aplicativos instalados pelo usuário."},
-            {"id": "app_sys", "name": "System Apps", "category": "apps", "desc": "Total de apps do sistema e fornecedores."},
-            {"id": "app_dis", "name": "Disabled Packages", "category": "apps", "desc": "Lista ou contagem de pacotes desabilitados."},
-            {"id": "app_sus", "name": "Bloatware/Suspicious", "category": "apps", "desc": "Análise básica para adware/malware conhecido."},
+            # Aplicativos
+            {"id": "app_3rd", "name": "Aplicativos do Usuário", "category": "apps", "desc": "Total de aplicativos instalados na partição de dados."},
+            {"id": "app_sys", "name": "Aplicativos de Sistema", "category": "apps", "desc": "Quantidade de pacotes pré-instalados de fábrica."},
+            {"id": "app_dis", "name": "Pacotes Desativados", "category": "apps", "desc": "Aplicativos congelados ou desativados."},
+            {"id": "app_sus", "name": "Análise de Integridade de Apps", "category": "apps", "desc": "Varredura básica contra aplicativos suspeitos."},
 
-            # Processes
-            {"id": "proc_cpu", "name": "Top CPU Consumers", "category": "processes", "desc": "Processos demandando mais processamento."},
-            {"id": "proc_mem", "name": "Memory Leak Suspects", "category": "processes", "desc": "Processos com consumo anômalo de memória."},
-            {"id": "proc_anr", "name": "ANR Log Check", "category": "processes", "desc": "Procura indícios de falhas/ANRs recentes."},
-            {"id": "proc_srv", "name": "Running Services", "category": "processes", "desc": "Total de serviços ativos em segundo plano."},
+            # Processos
+            {"id": "proc_cpu", "name": "Consumo de Processamento", "category": "processes", "desc": "Processos em execução de maior carga de CPU."},
+            {"id": "proc_mem", "name": "Consumo de Memória", "category": "processes", "desc": "Processos alocando maior volume de RAM."},
+            {"id": "proc_anr", "name": "Histórico de Falhas (ANR)", "category": "processes", "desc": "Verificação de travamentos recentes de apps."},
+            {"id": "proc_srv", "name": "Serviços em Execução", "category": "processes", "desc": "Contagem de serviços ativos em segundo plano."},
 
-            # Connectivity
-            {"id": "conn_usb", "name": "USB Configuration", "category": "connectivity", "desc": "Configuração USB ativa (mtp, adb, etc)."},
-            {"id": "conn_adb", "name": "ADB Authorization", "category": "connectivity", "desc": "Status da chave ADB com o dispositivo."},
-            {"id": "conn_fastboot", "name": "Fastboot Capability", "category": "connectivity", "desc": "Capacidade de entrar em modo bootloader/fastboot."},
+            # Conectividade USB
+            {"id": "conn_usb", "name": "Modo de Conexão USB", "category": "connectivity", "desc": "Perfil de comunicação USB ativo."},
+            {"id": "conn_adb", "name": "Autorização ADB", "category": "connectivity", "desc": "Chave de confiança e autorização de depuração."},
+            {"id": "conn_fastboot", "name": "Suporte a Fastboot", "category": "connectivity", "desc": "Capacidade de transição para modo de manutenção."},
         ]
 
     def get_available_tests(self) -> List[Dict[str, str]]:

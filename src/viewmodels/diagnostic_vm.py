@@ -33,11 +33,14 @@ class DiagnosticWorkerThread(QThread):
         results = []
         start_time = datetime.now()
 
+        import time
         for i, tid in enumerate(self.test_ids):
             if self._is_cancelled:
                 break
 
             self.progress.emit(i, tid)
+            # Pacing de execução realista para feedback visual de teste
+            time.sleep(0.08)
 
             try:
                 res = self._engine.run_test(self.serial, tid)

@@ -58,7 +58,6 @@ def build_executable(onefile: bool = False) -> None:
         str(main_script),
         '--name=Mobile-Diag-Pro',
         '--windowed',  # Sem console
-        '--clean',
         '--noconfirm',
     ]
 
@@ -106,6 +105,10 @@ def build_executable(onefile: bool = False) -> None:
     for exc in exclude_modules:
         args.append(f'--exclude-module={exc}')
 
+    # Diretório temporário de saída para evitar bloqueio do Windows Explorer na pasta dist
+    build_dist = project_root / "dist_build"
+    args.append(f'--distpath={build_dist}')
+
     # Executa o PyInstaller
     try:
         PyInstaller.__main__.run(args)
@@ -113,22 +116,33 @@ def build_executable(onefile: bool = False) -> None:
         print(f"Erro durante o processo de build: {e}")
         sys.exit(1)
 
-    # Resumo final
+    # Resumo final e sincronização com dist/
     dist_dir = project_root / "dist"
+    dist_dir.mkdir(parents=True, exist_ok=True)
     
-    print("\n" + "="*50)
-    print("BUILD CONCLUÍDO COM SUCESSO!")
-    print("="*50)
-    
+    import shutil
     if onefile:
-        exe_path = dist_dir / "Mobile-Diag-Pro.exe"
+        built_exe = build_dist / "Mobile-Diag-Pro.exe"
+        target_exe = dist_dir / "Mobile-Diag-Pro.exe"
+        if built_exe.exists():
+            shutil.copy2(built_exe, target_exe)
+        exe_path = target_exe
+        print("\n" + "="*50)
+        print("BUILD CONCLUÍDO COM SUCESSO!")
+        print("="*50)
         print(f"Localização do executável: {exe_path}")
         print("\nPróximos passos:")
         print("1. O arquivo .exe já está pronto para uso e distribuição.")
     else:
-        app_dir = dist_dir / "Mobile-Diag-Pro"
-        exe_path = app_dir / "Mobile-Diag-Pro.exe"
-        print(f"Diretório da aplicação: {app_dir}")
+        built_app_dir = build_dist / "Mobile-Diag-Pro"
+        target_app_dir = dist_dir / "Mobile-Diag-Pro"
+        if built_app_dir.exists():
+            shutil.copytree(built_app_dir, target_app_dir, dirs_exist_ok=True)
+        exe_path = target_app_dir / "Mobile-Diag-Pro.exe"
+        print("\n" + "="*50)
+        print("BUILD CONCLUÍDO COM SUCESSO!")
+        print("="*50)
+        print(f"Diretório da aplicação: {target_app_dir}")
         print(f"Executável principal: {exe_path}")
         print("\nPróximos passos para distribuição:")
         print("1. Crie um arquivo ZIP do diretório 'Mobile-Diag-Pro' para uma versão portátil.")
