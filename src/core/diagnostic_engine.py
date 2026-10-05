@@ -1,19 +1,46 @@
 """
-Motor de Diagnóstico Completo para Mobile-Diag-Pro.
-Executa +50 rotinas de testes reais via ADB/dumpsys/procfs e gera relatórios com valores inteligíveis.
+Motor de Diagnóstico do Mobile-Diag-Pro.
+
+Princípios:
+  * Todo resultado vem de uma LEITURA REAL do aparelho (ADB/dumpsys/procfs/sysfs/logcat).
+  * Nenhum teste é aprovado "por padrão": se o dado não pôde ser lido, o teste fica
+    como SKIPPED ("não medido") e o motivo é informado.
+  * Cada resultado informa o CRITÉRIO usado. "Aprovado" significa exclusivamente:
+    "o valor medido está dentro do limite descrito no critério".
+  * Itens apenas informativos usam o status INFO (não contam como aprovados).
+  * Ao final, `analyze()` correlaciona os achados e explica as causas prováveis de
+    lentidão, travamentos e demora para acender a tela.
 """
+import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from src.core.adb_client import ADBClient
-from src.core.adb_commands import ADBCommands
 from src.core.constants import TestStatus
 from src.core.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Pacotes/processos conhecidos por consumir recursos sem benefício claro ao usuário.
+KNOWN_HEAVY: Dict[str, str] = {
+    "com.miui.msa.global": "MIUI System Ads — serviço de anúncios/recomendações da Xiaomi",
+    "com.miui.analytics": "MIUI Analytics — telemetria da Xiaomi",
+    "com.mi.android.globalminusscreen": "App Vault — feed da tela à esquerda da home",
+    "com.facebook.appmanager": "Facebook App Manager — serviço residente do Facebook",
+    "com.facebook.services": "Facebook Services — serviço residente do Facebook",
+    "com.facebook.system": "Facebook System — serviço residente do Facebook",
+    "com.psafe.msuite": "dfndr/PSafe — 'limpador' de memória (forçam recarga de apps e gastam RAM)",
+    "com.cleanmaster.mguard": "Clean Master — 'limpador' de memória",
+    "com.ijinshan.kbatterydoctor": "Battery Doctor — 'otimizador' de bateria",
+}
+
+SYSTEM_PROCS = {
+    "system_server", "surfaceflinger", "zygote", "zygote64", "logd", "media.codec",
+    "cnss_diag", "kswapd0", "kworker", "mmc-cmdqd", "android.hardware",
+}
 
 
 @dataclass
@@ -28,6 +55,17 @@ class TestResult:
 
 
 @dataclass
+class Finding:
+    """Conclusão correlacionada: o que foi achado, por que importa e o que fazer."""
+    severity: str  # 'critical' | 'warning' | 'info'
+    title: str
+    evidence: str
+    impact: str
+    action: str
+    tests: List[str] = field(default_factory=list)
+
+
+@dataclass
 class DiagnosticReport:
     device_serial: str
     start_time: datetime
@@ -37,667 +75,1007 @@ class DiagnosticReport:
     warning_count: int = 0
     failed_count: int = 0
     skipped_count: int = 0
+    info_count: int = 0
     results: List[TestResult] = field(default_factory=list)
+    findings: List[Finding] = field(default_factory=list)
+    summary: str = ""
 
     @property
     def total_duration_seconds(self) -> float:
         return (self.end_time - self.start_time).total_seconds()
 
 
+def _int(txt: Any, default: int = 0) -> int:
+    try:
+        return int(str(txt).replace(",", "").replace(".", "").strip())
+    except (ValueError, TypeError):
+        return default
+
+
+def _float(txt: Any, default: float = 0.0) -> float:
+    try:
+        return float(str(txt).replace(",", "").strip())
+    except (ValueError, TypeError):
+        return default
+
+
+def _mb(kb: float) -> str:
+    return f"{kb / 1024:.0f} MB" if kb < 1024 * 1024 else f"{kb / 1024 / 1024:.2f} GB"
+
+
 class DiagnosticEngine:
-    """
-    Motor de Diagnóstico Compreensivo.
-    Executa testes reais via ADB, captura dados de hardware e formata explicações legíveis.
-    """
+    """Executa coletas reais e avalia cada teste com critério explícito."""
+
+    COLLECT_STEPS = 22
 
     def __init__(self, adb_client: Optional[ADBClient] = None) -> None:
         self.adb = adb_client or ADBClient()
-        self.cmds = ADBCommands(self.adb)
-        self._cache: Dict[str, Any] = {}
-        self._cache_time: float = 0.0
+        self._raw: Dict[str, Optional[str]] = {}
+        self._errors: Dict[str, str] = {}
+        self._facts: Dict[str, Any] = {}
+        self._serial: str = ""
+        self._collected_at: float = 0.0
 
-        self._tests_metadata = [
-            # Bateria
-            {"id": "batt_health", "name": "Saúde da Bateria", "category": "battery", "desc": "Verifica a saúde química e integridade da bateria."},
-            {"id": "batt_level", "name": "Nível de Carga", "category": "battery", "desc": "Nível atual de carga da bateria (%)."},
-            {"id": "batt_voltage", "name": "Tensão da Bateria", "category": "battery", "desc": "Tensão elétrica nominal da célula em mV e Volts."},
-            {"id": "batt_temp", "name": "Temperatura da Bateria", "category": "battery", "desc": "Temperatura térmica atual da célula em °C."},
-            {"id": "batt_capacity", "name": "Capacidade de Carga", "category": "battery", "desc": "Capacidade nominal e residual estimada da bateria."},
-            {"id": "batt_wear", "name": "Desgaste da Bateria", "category": "battery", "desc": "Estimativa de desgaste e retenção de carga."},
-            {"id": "batt_cycles", "name": "Ciclos de Carga", "category": "battery", "desc": "Contagem de ciclos de carga gerenciada pelo PMIC."},
-            {"id": "batt_charger", "name": "Fonte de Alimentação", "category": "battery", "desc": "Tipo de carregador e porta USB conectada."},
+        T = self._tests_metadata = []
 
-            # Processador (CPU)
-            {"id": "cpu_arch", "name": "Arquitetura do CPU", "category": "cpu", "desc": "Arquitetura e conjunto de instruções (ex. ARM64-v8a)."},
-            {"id": "cpu_cores", "name": "Quantidade de Núcleos", "category": "cpu", "desc": "Número total de núcleos físicos e lógicos da CPU."},
-            {"id": "cpu_online", "name": "Núcleos em Operação", "category": "cpu", "desc": "Núcleos ativos no escalonador de processos."},
-            {"id": "cpu_freq", "name": "Frequências da CPU", "category": "cpu", "desc": "Faixa de frequências operacionais dos núcleos."},
-            {"id": "cpu_throttle", "name": "Throttling Térmico", "category": "cpu", "desc": "Verificação de redução forçada de clock por calor."},
-            {"id": "cpu_load", "name": "Carga de Processamento", "category": "cpu", "desc": "Utilização instantânea dos núcleos de processamento."},
+        def add(tid: str, name: str, cat: str, desc: str) -> None:
+            T.append({"id": tid, "name": name, "category": cat, "desc": desc})
 
-            # Memória RAM
-            {"id": "mem_total", "name": "Memória RAM Total", "category": "memory", "desc": "Total de memória RAM física instalada."},
-            {"id": "mem_free", "name": "Memória RAM Livre", "category": "memory", "desc": "Quantidade de RAM livre sem alocação imediata."},
-            {"id": "mem_avail", "name": "Memória RAM Disponível", "category": "memory", "desc": "Memória utilizável considerando buffers e cache."},
-            {"id": "mem_cache", "name": "Memória em Cache", "category": "memory", "desc": "Memória alocada para cache de páginas e buffers."},
-            {"id": "mem_zram", "name": "Compactação zRAM", "category": "memory", "desc": "Status de memória compactada no kernel."},
-            {"id": "mem_swap", "name": "Memória Virtual / Swap", "category": "memory", "desc": "Alocação e utilização de memória de troca (swap)."},
-            {"id": "mem_oom", "name": "Estabilidade OOM Kills", "category": "memory", "desc": "Verificação de processos encerrados por falta de memória."},
+        # Memória
+        add("mem_total", "Memória RAM instalada", "memory", "RAM física total do aparelho.")
+        add("mem_avail", "RAM disponível", "memory", "Memória realmente utilizável sem matar apps (MemAvailable).")
+        add("mem_swap", "Uso de swap/zRAM", "memory", "Quanto do swap está ocupado. Swap alto = sistema sem RAM e gastando CPU para comprimir.")
+        add("mem_state", "Estado de memória do Android", "memory", "Nível de pressão de memória informado pelo próprio Android (dumpsys meminfo).")
+        add("mem_bgproc", "Processos em segundo plano", "memory", "Quantidade de processos mantidos vivos na memória.")
+        add("mem_lmk", "Apps encerrados por falta de memória", "memory", "Taxa de apps mortos pelo sistema (log de eventos).")
+        # CPU
+        add("cpu_load", "Carga de CPU", "cpu", "Uso total de CPU na janela recente + espera de I/O.")
+        add("cpu_throttle", "Limite de frequência (throttling)", "cpu", "Compara a frequência máxima permitida com o máximo de hardware.")
+        add("cpu_cores", "Núcleos ativos", "cpu", "Núcleos online versus total possível.")
+        add("cpu_gov", "Governador de CPU", "cpu", "Política de escalonamento de frequência.")
+        # Armazenamento
+        add("sto_free", "Espaço livre (/data)", "storage", "Espaço livre na partição do usuário.")
+        add("sto_write", "Velocidade de escrita real", "storage", "Grava 64 MB temporários e mede o tempo (arquivo é apagado em seguida).")
+        add("sto_latency", "Latência de escrita do Android", "storage", "Latência medida pelo serviço diskstats do Android.")
+        add("sto_mount", "Montagem da partição de dados", "storage", "Confere se /data está em leitura e escrita.")
+        add("sto_break", "Composição do armazenamento", "storage", "O que ocupa o espaço (apps, fotos, vídeos, sistema).")
+        # Bateria
+        add("batt_level", "Nível de carga", "battery", "Percentual atual.")
+        add("batt_health", "Saúde reportada pelo Android", "battery", "Código de saúde do serviço de bateria.")
+        add("batt_temp", "Temperatura da bateria", "battery", "Temperatura da célula.")
+        add("batt_volt", "Tensão da bateria", "battery", "Tensão atual vs. nível de carga (queda indica célula fraca).")
+        add("batt_capacity", "Capacidade real estimada", "battery", "Capacidade atual estimada versus a de projeto.")
+        add("batt_drain", "Consumo real vs. contabilizado", "battery", "Razão entre descarga medida e a explicada pelos apps.")
+        add("batt_charge", "Fonte de energia", "battery", "Tipo e corrente máxima da fonte.")
+        # Térmico
+        add("therm_cpu", "Temperatura da CPU", "thermal", "Maior temperatura entre as zonas térmicas de CPU.")
+        add("therm_board", "Temperatura da placa", "thermal", "Sensores da placa e do SoC.")
+        add("therm_storage", "Temperatura da memória interna", "thermal", "Sensor eMMC/UFS.")
+        # Display
+        add("disp_wake", "Tempo para ligar/apagar a tela", "display", "Duração do broadcast de tela no system_server (log de eventos).")
+        add("disp_info", "Resolução e densidade", "display", "Resolução física e DPI.")
+        # Sensores
+        add("sen_core", "Sensores essenciais", "sensors", "Presença de acelerômetro, giroscópio, proximidade, luz e bússola.")
+        # Rede
+        add("net_wifi", "Wi-Fi", "network", "Sinal e velocidade do link atual.")
+        # Sistema
+        add("sys_version", "Versão do sistema", "system", "Android e interface do fabricante.")
+        add("sys_patch", "Patch de segurança", "system", "Idade da última atualização de segurança instalada.")
+        add("sys_uptime", "Tempo ligado (uptime)", "system", "Tempo desde a última inicialização.")
+        add("sys_stability", "Reinicializações e travamentos do sistema", "system", "Histórico do DropBox: boots, watchdog e reinícios.")
+        add("sys_anim", "Escala de animações", "system", "Animações acima de 1x deixam o aparelho aparentemente mais lento.")
+        add("sys_saver", "Economia de energia", "system", "Economia de bateria ativa limita CPU e processos.")
+        add("sys_boot", "Bootloader / inicialização verificada", "system", "Estado de bloqueio e verificação do boot.")
+        # Apps
+        add("app_user", "Apps instalados pelo usuário", "apps", "Quantidade de apps de terceiros.")
+        add("app_heavy", "Apps de terceiros mais pesados (RAM)", "apps", "Apps de terceiros com maior consumo de memória agora.")
+        add("app_bloat", "Serviços residentes conhecidos por pesar", "apps", "Pacotes instalados que costumam gastar CPU/RAM em segundo plano.")
+        # Processos
+        add("proc_cpu", "Processos que mais usam CPU", "processes", "Maiores consumidores de CPU na janela recente.")
+        add("proc_anr", "Apps que pararam de responder (ANR)", "processes", "ANRs registrados pelo sistema e quais apps os causaram.")
+        add("proc_native", "Falhas nativas (tombstones)", "processes", "Crashes de baixo nível registrados.")
 
-            # Armazenamento
-            {"id": "sto_data", "name": "Armazenamento Interno", "category": "storage", "desc": "Espaço total e livre na partição do usuário (userdata)."},
-            {"id": "sto_sys", "name": "Partição de Sistema", "category": "storage", "desc": "Espaço e integridade da imagem do sistema Android."},
-            {"id": "sto_health", "name": "Integridade de Montagem", "category": "storage", "desc": "Verifica se as partições estão montadas com leitura e escrita."},
-            {"id": "sto_io", "name": "Latência de Leitura I/O", "category": "storage", "desc": "Tempo de resposta do barramento de armazenamento UFS/eMMC."},
-            {"id": "sto_sd", "name": "Cartão MicroSD Externo", "category": "storage", "desc": "Detecção e integridade do slot de cartão de memória."},
-
-            # Tela / Display
-            {"id": "disp_res", "name": "Resolução de Tela", "category": "display", "desc": "Resolução física e proporção de aspecto do display."},
-            {"id": "disp_dpi", "name": "Densidade de Pixels (DPI)", "category": "display", "desc": "Densidade de pontos por polegada do painel."},
-            {"id": "disp_refresh", "name": "Taxa de Atualização", "category": "display", "desc": "Frequência de varredura do visor (Hz)."},
-            {"id": "disp_bright", "name": "Nível de Brilho", "category": "display", "desc": "Brilho configurado no painel da tela."},
-            {"id": "disp_state", "name": "Estado de Energia da Tela", "category": "display", "desc": "Estado de ativação do painel (Ligado/Em espera)."},
-
-            # Sensores
-            {"id": "sen_accel", "name": "Acelerômetro", "category": "sensors", "desc": "Presença e resposta do sensor de movimento e inclinação."},
-            {"id": "sen_gyro", "name": "Giroscópio", "category": "sensors", "desc": "Sensor de rotação espacial em 3 eixos."},
-            {"id": "sen_prox", "name": "Sensor de Proximidade", "category": "sensors", "desc": "Detecção de aproximação para chamadas."},
-            {"id": "sen_light", "name": "Sensor de Luminosidade", "category": "sensors", "desc": "Medição de iluminação ambiente."},
-            {"id": "sen_mag", "name": "Bússola / Magnetômetro", "category": "sensors", "desc": "Sensor de campo magnético e orientação."},
-            {"id": "sen_bar", "name": "Barômetro", "category": "sensors", "desc": "Sensor de pressão atmosférica e altitude."},
-
-            # Térmico
-            {"id": "therm_cpu", "name": "Temperatura do CPU", "category": "thermal", "desc": "Leitura das zonas térmicas do processador."},
-            {"id": "therm_batt", "name": "Temperatura da Bateria", "category": "thermal", "desc": "Sensor térmico da placa de gerenciamento de bateria."},
-            {"id": "therm_gpu", "name": "Temperatura da GPU", "category": "thermal", "desc": "Sensor térmico do processador gráfico."},
-            {"id": "therm_hal", "name": "HAL Térmico & Throttling", "category": "thermal", "desc": "Nível de contenção de temperatura do firmware."},
-
-            # Conectividade e Rede
-            {"id": "net_wifi", "name": "Interface Wi-Fi", "category": "network", "desc": "Status da placa sem fio e conexão atual."},
-            {"id": "net_wifi_sig", "name": "Sinal Wi-Fi (dBm)", "category": "network", "desc": "Potência do sinal de recepção do ponto de acesso."},
-            {"id": "net_wifi_spd", "name": "Velocidade de Link Wi-Fi", "category": "network", "desc": "Velocidade negociada com o roteador (Mbps)."},
-            {"id": "net_sim", "name": "Status do Chip SIM", "category": "network", "desc": "Detecção do chip da operadora e slot SIM."},
-            {"id": "net_cell_sig", "name": "Sinal de Rede Celular", "category": "network", "desc": "Intensidade da antena de telefonia móvel."},
-            {"id": "net_data", "name": "Dados Móveis (4G/5G)", "category": "network", "desc": "Status de tráfego de dados pela rede da operadora."},
-
-            # Sistema e Segurança
-            {"id": "sys_os", "name": "Versão do Android & API", "category": "system", "desc": "Versão do sistema operacional e nível de API."},
-            {"id": "sys_patch", "name": "Patch de Segurança", "category": "system", "desc": "Data da atualização de segurança instalada."},
-            {"id": "sys_bootloader", "name": "Bloqueio do Bootloader", "category": "system", "desc": "Estado de trava de segurança do bootloader."},
-            {"id": "sys_verified", "name": "Boot Verificado (AVB)", "category": "system", "desc": "Integridade de boot seguro (dm-verity / AVB)."},
-            {"id": "sys_encrypt", "name": "Criptografia de Dados", "category": "system", "desc": "Status da criptografia baseada em arquivo (FBE)."},
-            {"id": "sys_knox", "name": "Garantia / Status OEM", "category": "system", "desc": "Verificação de violação de garantia ou flags OEM."},
-            {"id": "sys_uptime", "name": "Tempo em Atividade (Uptime)", "category": "system", "desc": "Tempo decorrido desde a última inicialização."},
-
-            # Aplicativos
-            {"id": "app_3rd", "name": "Aplicativos do Usuário", "category": "apps", "desc": "Total de aplicativos instalados na partição de dados."},
-            {"id": "app_sys", "name": "Aplicativos de Sistema", "category": "apps", "desc": "Quantidade de pacotes pré-instalados de fábrica."},
-            {"id": "app_dis", "name": "Pacotes Desativados", "category": "apps", "desc": "Aplicativos congelados ou desativados."},
-            {"id": "app_sus", "name": "Análise de Integridade de Apps", "category": "apps", "desc": "Varredura básica contra aplicativos suspeitos."},
-
-            # Processos
-            {"id": "proc_cpu", "name": "Consumo de Processamento", "category": "processes", "desc": "Processos em execução de maior carga de CPU."},
-            {"id": "proc_mem", "name": "Consumo de Memória", "category": "processes", "desc": "Processos alocando maior volume de RAM."},
-            {"id": "proc_anr", "name": "Histórico de Falhas (ANR)", "category": "processes", "desc": "Verificação de travamentos recentes de apps."},
-            {"id": "proc_srv", "name": "Serviços em Execução", "category": "processes", "desc": "Contagem de serviços ativos em segundo plano."},
-
-            # Conectividade USB
-            {"id": "conn_usb", "name": "Modo de Conexão USB", "category": "connectivity", "desc": "Perfil de comunicação USB ativo."},
-            {"id": "conn_adb", "name": "Autorização ADB", "category": "connectivity", "desc": "Chave de confiança e autorização de depuração."},
-            {"id": "conn_fastboot", "name": "Suporte a Fastboot", "category": "connectivity", "desc": "Capacidade de transição para modo de manutenção."},
-        ]
-
+    # ------------------------------------------------------------------ infra
     def get_available_tests(self) -> List[Dict[str, str]]:
         return self._tests_metadata
 
-    def _get_device_data(self, serial: str) -> Dict[str, Any]:
-        """Obtém dados em cache ou consulta o aparelho."""
-        now = time.time()
-        if serial in self._cache and (now - self._cache_time) < 15.0:
-            return self._cache[serial]
-
-        data: Dict[str, Any] = {}
+    def _sh(self, key: str, cmd: str, timeout: float = 30.0) -> Optional[str]:
+        """Executa um comando no aparelho e guarda a saída bruta. Nunca inventa dados."""
         try:
-            data["battery"] = self.cmds.get_battery_info(serial)
-        except Exception:
-            data["battery"] = {}
+            out = self.adb.shell(self._serial, cmd, timeout=timeout)
+            out = (out or "").replace("\r\n", "\n").replace("\r", "\n")
+            self._raw[key] = out
+            return out
+        except Exception as exc:
+            self._raw[key] = None
+            self._errors[key] = str(exc)
+            logger.warning(f"Coleta '{key}' falhou: {exc}")
+            return None
 
+    def collect(self, serial: str, progress: Optional[Callable[[int, int, str], None]] = None) -> bool:
+        """Coleta TODOS os dados brutos do aparelho (a parte demorada do diagnóstico)."""
+        self._serial = serial
+        self._raw, self._errors, self._facts = {}, {}, {}
+        steps: List[Tuple[str, str, str, float]] = [
+            ("date", "Lendo data/hora do aparelho", "date '+%Y-%m-%d %H:%M:%S'", 10),
+            ("props", "Lendo propriedades do sistema", "getprop", 20),
+            ("meminfo", "Lendo memória (/proc/meminfo)", "cat /proc/meminfo", 15),
+            ("dmeminfo", "Analisando memória por processo (dumpsys meminfo)", "dumpsys meminfo", 90),
+            ("lru", "Contando processos em segundo plano", "dumpsys activity processes | grep -E 'Process LRU list'", 60),
+            ("cpuinfo", "Medindo uso de CPU por processo", "dumpsys cpuinfo", 40),
+            ("cpufreq", "Lendo frequências e limites da CPU",
+             "for i in 0 1 2 3 4 5 6 7 8 9 10 11; do d=/sys/devices/system/cpu/cpu$i/cpufreq; "
+             "[ -r $d/scaling_max_freq ] && echo \"cpu$i $(cat $d/scaling_cur_freq) $(cat $d/scaling_max_freq) "
+             "$(cat $d/cpuinfo_max_freq) $(cat $d/scaling_governor)\"; done", 20),
+            ("cpuonline", "Lendo núcleos ativos", "cat /sys/devices/system/cpu/online; cat /sys/devices/system/cpu/possible", 10),
+            ("battery", "Lendo bateria (dumpsys battery)", "dumpsys battery", 20),
+            ("bstats", "Lendo estatísticas de bateria",
+             "dumpsys batterystats | grep -iE 'Estimated battery capacity|learned battery|Capacity:.*Computed drain'", 60),
+            ("thermal", "Lendo zonas térmicas",
+             "for i in $(seq 0 59); do t=/sys/class/thermal/thermal_zone$i; "
+             "[ -r $t/type ] && echo \"$(cat $t/type) $(cat $t/temp)\"; done", 30),
+            ("diskstats", "Lendo diskstats do Android",
+             "dumpsys diskstats | grep -E '^(Latency|Data-Free|System-Free|File-based|App Size|Photos Size|Videos Size|Audio Size|Downloads Size|System Size|Other Size)'", 40),
+            ("mounts", "Verificando montagem de /data", "grep ' /data ' /proc/mounts", 10),
+            ("iotest", "Testando velocidade de escrita real (64 MB temporários)",
+             "dd if=/dev/zero of=/data/local/tmp/mdp_io_test bs=1M count=64 conv=fsync 2>&1 | tail -1; "
+             "rm -f /data/local/tmp/mdp_io_test", 90),
+            ("events", "Lendo log de eventos do sistema (encerramentos, ANR, tela)",
+             "logcat -d -b events -t 20000 2>&1 | grep -E 'am_kill|am_anr|am_crash|power_screen_broadcast_done'", 90),
+            ("dropbox", "Lendo histórico de falhas (DropBox)",
+             "dumpsys dropbox | grep -E ' (data_app_anr|system_app_anr|SYSTEM_TOMBSTONE|data_app_native_crash|data_app_crash|system_app_crash|system_server_crash|system_server_watchdog|SYSTEM_BOOT|SYSTEM_RESTART) \\('", 60),
+            ("anr_procs", "Identificando apps que travaram (ANR)",
+             "(dumpsys dropbox --print data_app_anr; dumpsys dropbox --print system_app_anr) 2>&1 | grep -E '^Process:'", 120),
+            ("tomb_procs", "Identificando origem das falhas nativas",
+             "dumpsys dropbox --print SYSTEM_TOMBSTONE 2>&1 | grep -E '^(Process|>>> )' | head -60", 90),
+            ("pkgs_user", "Listando apps instalados", "pm list packages -3", 30),
+            ("pkgs_all", "Listando pacotes do sistema", "pm list packages", 30),
+            ("settings", "Lendo configurações de animação e economia",
+             "echo $(settings get global window_animation_scale) $(settings get global transition_animation_scale) "
+             "$(settings get global animator_duration_scale) $(settings get global low_power)", 15),
+            ("misc", "Lendo Wi-Fi, sensores e tela",
+             "dumpsys wifi | grep mWifiInfo | head -1; echo ===SENS; dumpsys sensorservice | grep -E '^0x.*type:'; "
+             "echo ===WM; wm size; wm density; echo ===UP; cat /proc/uptime", 40),
+        ]
+        total = len(steps)
+        ok = 0
+        for i, (key, label, cmd, to) in enumerate(steps):
+            if progress:
+                progress(i, total, label)
+            if self._sh(key, cmd, to) is not None:
+                ok += 1
+        self._collected_at = time.time()
+        if progress:
+            progress(total, total, "Coleta concluída")
+        # props -> dicionário
+        props: Dict[str, str] = {}
+        for m in re.finditer(r"^\[([^\]]+)\]: \[(.*)\]$", self._raw.get("props") or "", re.M):
+            props[m.group(1)] = m.group(2)
+        self._facts["props"] = props
+        return ok >= 4
+
+    # ---------------------------------------------------------------- helpers
+    def _need(self, key: str) -> str:
+        v = self._raw.get(key)
+        if v is None:
+            raise _NotMeasured(f"comando '{key}' falhou: {self._errors.get(key, 'sem resposta do aparelho')}")
+        return v
+
+    def _meminfo(self) -> Dict[str, int]:
+        d: Dict[str, int] = {}
+        for m in re.finditer(r"^(\w[\w()]*):\s+(\d+)\s*kB", self._need("meminfo"), re.M):
+            d[m.group(1)] = int(m.group(2))
+        if "MemTotal" not in d:
+            raise _NotMeasured("/proc/meminfo sem MemTotal")
+        return d
+
+    def _dmem(self) -> Dict[str, Any]:
+        txt = self._need("dmeminfo")
+        out: Dict[str, Any] = {"procs": []}
+        sec = re.search(r"Total PSS by process:\n(.*?)\n\n", txt, re.S)
+        if sec:
+            for m in re.finditer(r"^\s*([\d,]+)K: (\S+) \(pid (\d+)", sec.group(1), re.M):
+                out["procs"].append((_int(m.group(1)), m.group(2), int(m.group(3))))
+        m = re.search(r"Total RAM: ([\d,]+)K \(status (\w+)\)", txt)
+        if m:
+            out["status"] = m.group(2)
+        for label, key in (("Free RAM", "free"), ("Used RAM", "used"), ("Lost RAM", "lost")):
+            mm = re.search(rf"{label}: ([\d,]+)K", txt)
+            if mm:
+                out[key] = _int(mm.group(1))
+        mz = re.search(r"ZRAM: ([\d,]+)K physical used for ([\d,]+)K in swap", txt)
+        if mz:
+            out["zram_phys"], out["zram_swap"] = _int(mz.group(1)), _int(mz.group(2))
+        return out
+
+    def _cpuinfo(self) -> Dict[str, Any]:
+        txt = self._need("cpuinfo")
+        out: Dict[str, Any] = {"procs": []}
+        m = re.search(r"([\d.]+)% TOTAL: ([\d.]+)% user \+ ([\d.]+)% kernel(?: \+ ([\d.]+)% iowait)?", txt)
+        if m:
+            out["total"], out["user"], out["kernel"] = float(m.group(1)), float(m.group(2)), float(m.group(3))
+            out["iowait"] = float(m.group(4) or 0)
+        for m in re.finditer(r"^\s*([\d.]+)% (\d+)/([^:]+):", txt, re.M):
+            out["procs"].append((float(m.group(1)), m.group(3).strip(), int(m.group(2))))
+        if "total" not in out:
+            raise _NotMeasured("dumpsys cpuinfo sem linha TOTAL")
+        return out
+
+    def _user_pkgs(self) -> set:
+        return {l.split(":", 1)[1].strip() for l in self._need("pkgs_user").splitlines() if l.startswith("package:")}
+
+    def _now(self) -> datetime:
         try:
-            data["cpu"] = self.cmds.get_cpu_info(serial)
-        except Exception:
-            data["cpu"] = {}
+            return datetime.strptime((self._raw.get("date") or "").strip(), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return datetime.now()
 
-        try:
-            data["mem"] = self.cmds.get_memory_info(serial)
-        except Exception:
-            data["mem"] = {}
+    def _events(self) -> Dict[str, Any]:
+        if "events_parsed" in self._facts:
+            return self._facts["events_parsed"]
+        txt = self._need("events")
+        year = self._now().year
+        stamps: List[datetime] = []
+        kills: List[str] = []
+        anrs = 0
+        wake_on: List[int] = []
+        wake_off: List[int] = []
+        for line in txt.splitlines():
+            m = re.match(r"(\d\d-\d\d \d\d:\d\d:\d\d)", line)
+            if m:
+                try:
+                    stamps.append(datetime.strptime(f"{year}-{m.group(1)}", "%Y-%m-%d %H:%M:%S"))
+                except ValueError:
+                    pass
+            if "am_kill" in line:
+                mk = re.search(r"\[\d+,\d+,([^,]+),(-?\d+),(.*)\]", line)
+                kills.append(re.sub(r"\s*#\d+", "", mk.group(3)).strip() if mk else "desconhecido")
+            elif "am_anr" in line:
+                anrs += 1
+            elif "power_screen_broadcast_done" in line:
+                mw = re.search(r"\[(\d),(\d+),", line)
+                if mw:
+                    (wake_on if mw.group(1) == "1" else wake_off).append(int(mw.group(2)))
+        span_min = ((max(stamps) - min(stamps)).total_seconds() / 60.0) if len(stamps) > 1 else 0.0
+        res = {"kills": kills, "anrs": anrs, "wake_on": wake_on, "wake_off": wake_off, "span_min": span_min}
+        self._facts["events_parsed"] = res
+        return res
 
-        try:
-            data["storage"] = self.cmds.get_storage_info(serial)
-        except Exception:
-            data["storage"] = {}
+    def _dropbox(self) -> Dict[str, List[datetime]]:
+        txt = self._need("dropbox")
+        d: Dict[str, List[datetime]] = {}
+        for m in re.finditer(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (\S+) \(", txt, re.M):
+            try:
+                d.setdefault(m.group(2), []).append(datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
+            except ValueError:
+                pass
+        return d
 
-        try:
-            data["display"] = self.cmds.get_display_info(serial)
-        except Exception:
-            data["display"] = {}
-
-        try:
-            data["props"] = self.adb.get_all_props(serial)
-        except Exception:
-            data["props"] = {}
-
-        try:
-            data["thermal"] = self.cmds.get_thermal_info(serial)
-        except Exception:
-            data["thermal"] = {}
-
-        self._cache[serial] = data
-        self._cache_time = now
-        return data
-
+    # ------------------------------------------------------------ execução
     def run_test(self, serial: str, test_id: str) -> TestResult:
-        """Executa um teste individual com comandos ADB reais e resultados legíveis em português."""
-        start = time.time()
-        test_info = next((t for t in self._tests_metadata if t["id"] == test_id), None)
-        if not test_info:
-            return TestResult(test_id, "Teste", "unknown", TestStatus.SKIPPED, "Teste não encontrado.")
-
-        status = TestStatus.PASSED
-        message = ""
-        details: Dict[str, Any] = {}
-
+        t0 = time.time()
+        meta = next((t for t in self._tests_metadata if t["id"] == test_id), None)
+        if not meta:
+            return TestResult(test_id, test_id, "unknown", TestStatus.SKIPPED, "Teste inexistente.")
+        if serial != self._serial or not self._raw:
+            self.collect(serial)
+        fn = getattr(self, f"_t_{test_id}", None)
         try:
-            data = self._get_device_data(serial)
-            batt = data.get("battery", {})
-            cpu = data.get("cpu", {})
-            mem = data.get("mem", {})
-            storage = data.get("storage", {})
-            disp = data.get("display", {})
-            props = data.get("props", {})
-
-            # --- BATERIA ---
-            if test_id == "batt_health":
-                h_code = str(batt.get("health", "2"))
-                h_map = {"2": "Boa / Saudável", "3": "Superaquecimento", "4": "Esgotada / Degradada", "5": "Sobretensão"}
-                h_text = h_map.get(h_code, "Operacional")
-                status = TestStatus.PASSED if h_code == "2" else TestStatus.WARNING
-                message = f"Saúde da Bateria: {h_text} (Tensão e integridade química nominais)"
-                details = {
-                    "Estado de Saúde": h_text,
-                    "Carga Atual": f"{batt.get('level', 100)}%",
-                    "Temperatura da Bateria": f"{float(batt.get('temperature', 300))/10:.1f} °C",
-                    "Tensão Elétrica": f"{batt.get('voltage', 4000)} mV ({float(batt.get('voltage', 4000))/1000:.2f} V)",
-                    "Tecnologia": batt.get("technology", "Li-Polymer"),
-                }
-
-            elif test_id == "batt_level":
-                lvl = int(batt.get("level", 100))
-                status = TestStatus.PASSED if lvl >= 20 else TestStatus.WARNING
-                status_desc = "Carga abundante" if lvl >= 50 else "Carga moderada" if lvl >= 20 else "Bateria baixa"
-                message = f"Nível de Carga: {lvl}% ({status_desc})"
-                details = {
-                    "Nível Atual": f"{lvl}%",
-                    "Alimentação": "Cabo USB (Computador)" if batt.get("usb_powered") == "true" else "Descarregando",
-                    "Capacidade Máxima": "100%",
-                }
-
-            elif test_id == "batt_voltage":
-                v = int(batt.get("voltage", 4000))
-                v_volts = v / 1000.0
-                status = TestStatus.PASSED if 3.6 <= v_volts <= 4.45 else TestStatus.WARNING
-                message = f"Tensão Elétrica: {v} mV ({v_volts:.2f} V - Dentro da margem de segurança)"
-                details = {
-                    "Tensão Medida": f"{v} mV",
-                    "Tensão em Volts": f"{v_volts:.2f} V",
-                    "Faixa Segura": "3.70 V a 4.45 V",
-                    "Estabilidade": "Estável e balanceada",
-                }
-
-            elif test_id == "batt_temp":
-                temp = float(batt.get("temperature", 300)) / 10.0
-                status = TestStatus.PASSED if temp < 42.0 else TestStatus.WARNING
-                message = f"Temperatura Térmica: {temp:.1f} °C ({'Temperatura operacional ideal' if temp < 38 else 'Temperatura moderada'})"
-                details = {
-                    "Temperatura da Bateria": f"{temp:.1f} °C",
-                    "Faixa Ideal": "15 °C a 40 °C",
-                    "Alerta Térmico": "Normal (Sem sobreaquecimento)",
-                }
-
-            elif test_id == "batt_capacity":
-                counter = int(batt.get("charge_counter", 5000000)) // 1000
-                if counter <= 0:
-                    counter = 5000
-                message = f"Capacidade de Bateria: {counter} mAh (Capacidade nominal de fábrica)"
-                details = {
-                    "Capacidade Atual Medida": f"{counter} mAh",
-                    "Capacidade Nominal de Fábrica": "5000 mAh",
-                    "Eficiência de Célula": "100%",
-                }
-
-            elif test_id == "batt_wear":
-                message = "Nível de Desgaste: < 5% estimado (Excelente retenção de carga residual)"
-                details = {
-                    "Degradação Estimada": "Baixa (< 5%)",
-                    "Condição Geral": "Ótima",
-                    "Recomendação": "Substituição desnecessária",
-                }
-
-            elif test_id == "batt_cycles":
-                message = "Contagem de Ciclos: Gerenciada pelo controlador de carga PMIC"
-                details = {
-                    "Controlador PMIC": "Operacional",
-                    "Desgaste de Ciclos": "Normal",
-                }
-
-            elif test_id == "batt_charger":
-                is_usb = batt.get("usb_powered") == "true"
-                src_name = "Cabo USB do Computador" if is_usb else "Carregador AC" if batt.get("ac_powered") == "true" else "Bateria"
-                message = f"Fonte de Energia Conectada: {src_name}"
-                details = {
-                    "Conexão USB": "Sim" if is_usb else "Não",
-                    "Corrente Máxima": "500 mA (Porta USB PC)",
-                    "Carregamento Rápido": "Desativado em porta USB comum",
-                }
-
-            # --- CPU ---
-            elif test_id == "cpu_arch":
-                abi = props.get("ro.product.cpu.abi", "arm64-v8a")
-                hardware = props.get("ro.hardware", props.get("ro.board.platform", "JLQ JR510"))
-                message = f"Arquitetura: {abi} (Processador 64-bit)"
-                details = {
-                    "Arquitetura": abi,
-                    "Instruções": "ARMv8 64-bit",
-                    "Chipset / Plataforma": hardware,
-                }
-
-            elif test_id == "cpu_cores":
-                cores_list = cpu.get("cores", [])
-                num_cores = len([c for c in cores_list if "index" in c]) or 8
-                message = f"Processador Octa-Core: {num_cores} núcleos de processamento ativos"
-                details = {
-                    "Total de Núcleos": f"{num_cores} núcleos",
-                    "Configuração": "Heterogênea (Multi-Core Eficiência + Performance)",
-                }
-
-            elif test_id == "cpu_online":
-                message = "Núcleos Online: Todos os 8 núcleos ativos e escalonando frequência"
-                details = {
-                    "Núcleos Ativos": "8 de 8",
-                    "Governador do Kernel": "schedutil / balanceado",
-                }
-
-            elif test_id == "cpu_freq":
-                message = "Faixa de Frequência: 400 MHz (repouso) a 2000 MHz (pico)"
-                details = {
-                    "Frequência Mínima": "400 MHz",
-                    "Frequência Máxima": "2.0 GHz",
-                    "Escalonamento": "Dinâmico sob demanda",
-                }
-
-            elif test_id == "cpu_throttle":
-                message = "Controle Térmico (Throttling): Nenhum estrangulamento de performance ativo"
-                details = {
-                    "Throttling de CPU": "Inativo",
-                    "Desempenho Disponível": "100%",
-                }
-
-            elif test_id == "cpu_load":
-                load = float(cpu.get("total_usage", 25.0))
-                status = TestStatus.PASSED if load < 85.0 else TestStatus.WARNING
-                message = f"Uso do Processador: {load:.1f}% (Nível normal de processamento)"
-                details = {
-                    "Carga Atual": f"{load:.1f}%",
-                    "Fila de Processamento": "Estável",
-                }
-
-            # --- MEMÓRIA RAM ---
-            elif test_id == "mem_total":
-                total_bytes = int(mem.get("memtotal", 4000000000))
-                total_gb = total_bytes / (1024**3)
-                message = f"Memória RAM Total: {total_gb:.2f} GB ({int(total_bytes/(1024**2))} MB)"
-                details = {
-                    "RAM Física Instalada": f"{total_gb:.2f} GB",
-                    "Total em MB": f"{int(total_bytes/(1024**2))} MB",
-                }
-
-            elif test_id == "mem_free" or test_id == "mem_avail":
-                avail_bytes = int(mem.get("memavailable", 1800000000))
-                total_bytes = int(mem.get("memtotal", 4000000000))
-                avail_gb = avail_bytes / (1024**3)
-                avail_pct = (avail_bytes / total_bytes) * 100 if total_bytes > 0 else 45.0
-                message = f"Memória RAM Disponível: {avail_gb:.2f} GB livres ({avail_pct:.0f}% disponível)"
-                details = {
-                    "RAM Disponível": f"{avail_gb:.2f} GB",
-                    "Porcentagem Livre": f"{avail_pct:.0f}%",
-                    "Disponibilidade": "Suficiente para execução fluida de apps",
-                }
-
-            elif test_id == "mem_cache":
-                cached_bytes = int(mem.get("cached", 1500000000))
-                cached_mb = int(cached_bytes / (1024**2))
-                message = f"Cache e Buffers do Sistema: {cached_mb} MB (Otimização ativa do Android)"
-                details = {
-                    "Memória em Cache": f"{cached_mb} MB",
-                    "Reclaimable": "Sim (Liberada automaticamente se necessário)",
-                }
-
-            elif test_id == "mem_zram":
-                swap_total = int(mem.get("swaptotal", 2000000000))
-                swap_mb = int(swap_total / (1024**2))
-                message = f"Compactação zRAM: Ativa ({swap_mb} MB de memória virtual compactada)"
-                details = {
-                    "Status zRAM": "Ativo no Kernel",
-                    "Espaço zRAM Alocado": f"{swap_mb} MB",
-                }
-
-            elif test_id == "mem_swap":
-                swap_total = int(mem.get("swaptotal", 2000000000))
-                swap_free = int(mem.get("swapfree", 1000000000))
-                swap_used_mb = int((swap_total - swap_free) / (1024**2))
-                swap_total_mb = int(swap_total / (1024**2))
-                message = f"Uso de Memória Swap: {swap_used_mb} MB usados de {swap_total_mb} MB"
-                details = {
-                    "Swap Total": f"{swap_total_mb} MB",
-                    "Swap Utilizado": f"{swap_used_mb} MB",
-                }
-
-            elif test_id == "mem_oom":
-                message = "Histórico OOM (Out-of-Memory): Nenhum encerramento crítico recente"
-                details = {
-                    "OOM Kills": "0 registros",
-                    "Estabilidade de Memória": "Excelente",
-                }
-
-            # --- ARMAZENAMENTO ---
-            elif test_id == "sto_data":
-                partitions = storage.get("partitions", [])
-                data_part = next((p for p in partitions if p.get("mount_point") in ("/data", "/storage/emulated")), {})
-                free_space = data_part.get("free", "33G")
-                total_space = data_part.get("size", "47G")
-                used_pct = data_part.get("use_percent", "29%")
-                message = f"Armazenamento Interno (/data): {free_space} livres de {total_space} ({used_pct} em uso)"
-                details = {
-                    "Espaço Livre": free_space,
-                    "Espaço Total": total_space,
-                    "Percentual Ocupado": used_pct,
-                }
-
-            elif test_id == "sto_sys":
-                message = "Partição de Sistema (/system): Montagem íntegra e verificada"
-                details = {
-                    "Status de Montagem": "Íntegra / Verificada pelo dm-verity",
-                    "Assinatura do Sistema": "Original do Fabricante",
-                }
-
-            elif test_id == "sto_health":
-                message = "Integridade do Armazenamento Flash (eMMC/UFS): Íntegro (Sem setores defeituosos)"
-                details = {
-                    "Permissão de Escrita": "Read-Write (rw)",
-                    "Erros de I/O de Bloco": "0",
-                    "Integridade de FS": "OK",
-                }
-
-            elif test_id == "sto_io":
-                message = "Latência de I/O do Armazenamento: Resposta rápida (< 3 ms)"
-                details = {
-                    "Tempo Médio de Leitura": "2.1 ms",
-                    "Desempenho de Flash": "Ótimo",
-                }
-
-            elif test_id == "sto_sd":
-                message = "Cartão MicroSD: Não inserido / Não detectado (Uso exclusivo de memória interna)"
-                details = {
-                    "Slot de Cartão": "Vazio",
-                    "Armazenamento Primário": "Memória Flash Interna",
-                }
-
-            # --- DISPLAY / TELA ---
-            elif test_id == "disp_res":
-                res = disp.get("resolution", "720x1650")
-                message = f"Resolução da Tela: {res} pixels (Painel HD+)"
-                parts = res.split("x") if "x" in res else ["720", "1650"]
-                details = {
-                    "Largura": f"{parts[0]} pixels",
-                    "Altura": f"{parts[1]} pixels",
-                    "Proporção": "20:9",
-                }
-
-            elif test_id == "disp_dpi":
-                dpi = disp.get("density", 320)
-                message = f"Densidade de Pixels: {dpi} DPI (Densidade visual configurada)"
-                details = {
-                    "Densidade Nativa": f"{dpi} DPI",
-                    "Escala Visual": "Normal",
-                }
-
-            elif test_id == "disp_refresh":
-                message = "Taxa de Atualização: 60 Hz (Taxa padrão do painel LCD)"
-                details = {
-                    "Taxa de Quadros": "60 Hz",
-                    "Sincronização": "Suportada",
-                }
-
-            elif test_id == "disp_bright":
-                message = "Nível de Brilho: Ajuste dinâmico operacional"
-                details = {
-                    "Controle de Brilho": "Automático e Manual",
-                    "Painel": "IPS LCD",
-                }
-
-            elif test_id == "disp_state":
-                message = "Estado da Tela: Ligada e Desbloqueada (Modo Ativo)"
-                details = {
-                    "Energia do Visor": "Ligado (Screen ON)",
-                    "Bloqueio de Tela": "Desbloqueada",
-                }
-
-            # --- SENSORES ---
-            elif test_id == "sen_accel":
-                message = "Acelerômetro 3D: Presente e respondendo às variações de movimento"
-                details = {
-                    "Sensor": "Acelerômetro de 3 Eixos",
-                    "Status": "Ativo e Calibrado",
-                }
-
-            elif test_id == "sen_gyro":
-                message = "Giroscópio: Presente (Detecção de rotação angular operacional)"
-                details = {"Sensor": "Giroscópio", "Status": "Operacional"}
-
-            elif test_id == "sen_prox":
-                message = "Sensor de Proximidade: Operacional (Usado em chamadas ao aproximar da orelha)"
-                details = {"Sensor": "Proximity Sensor", "Status": "Calibrado"}
-
-            elif test_id == "sen_light":
-                message = "Sensor de Luminosidade: Operacional (Ajuste automático de brilho)"
-                details = {"Sensor": "Ambient Light Sensor", "Status": "Ativo"}
-
-            elif test_id == "sen_mag":
-                message = "Bússola / Magnetômetro: Sensor geomagnético ativo e calibrado"
-                details = {"Sensor": "Geomagnetic Compass", "Status": "Ativo"}
-
-            elif test_id == "sen_bar":
-                message = "Barômetro: Não integrado pelo fabricante (Normal neste modelo)"
-                details = {"Sensor": "Barometer", "Disponibilidade": "Não presente no hardware"}
-
-            # --- TÉRMICO ---
-            elif test_id == "therm_cpu":
-                temp = float(batt.get("temperature", 320)) / 10.0 + 4.0
-                message = f"Temperatura dos Núcleos de CPU: {temp:.1f} °C (Operação estável)"
-                details = {"Temperatura Média CPU": f"{temp:.1f} °C", "Limite Térmico": "85.0 °C"}
-
-            elif test_id == "therm_batt":
-                temp = float(batt.get("temperature", 320)) / 10.0
-                message = f"Leitura Térmica da Bateria: {temp:.1f} °C (Excelente refrigeração)"
-                details = {"Temperatura": f"{temp:.1f} °C", "Faixa Segura": "15 °C a 45 °C"}
-
-            elif test_id == "therm_gpu":
-                message = "Temperatura da GPU: Normal (Sem carga gráfica pesada)"
-                details = {"Acelerador Gráfico": "Mali / JLQ", "Status Térmico": "Normal"}
-
-            elif test_id == "therm_hal":
-                message = "Camada de Abstração Térmica (Thermal HAL): Nível 0 (Sem restrições)"
-                details = {"Nível de Severidade Térmica": "0 (None - Nominal)"}
-
-            # --- REDE & TELEFONIA ---
-            elif test_id == "net_wifi":
-                message = "Interface Wi-Fi: Módulo ativo e operacional"
-                details = {"Módulo Sem Fio": "802.11 a/b/g/n/ac Dual Band", "Status": "Ativo"}
-
-            elif test_id == "net_wifi_sig":
-                message = "Potência do Sinal Wi-Fi: Conexão estável"
-                details = {"Faixa": "2.4 GHz / 5 GHz", "Estabilidade": "Boa"}
-
-            elif test_id == "net_wifi_spd":
-                message = "Velocidade de Link Wi-Fi: Negociação de link ativa"
-                details = {"Link Speed": "Automático por proximidade"}
-
-            elif test_id == "net_sim":
-                message = "Bandeja de Chips SIM: Detectada no sistema (Suporte a Dual SIM)"
-                details = {"Slots SIM": "SIM 1 / SIM 2", "Leitor": "Operacional"}
-
-            elif test_id == "net_cell_sig":
-                message = "Recepção Celular: Modem de rádio móvel ativo (Baseband funcional)"
-                details = {"Modem Baseband": "Operacional", "Suporte 4G LTE": "Sim"}
-
-            elif test_id == "net_data":
-                message = "Tráfego de Dados Móveis: Controlador de dados ativo"
-                details = {"Dados Móveis": "Configurado"}
-
-            # --- SISTEMA & SEGURANÇA ---
-            elif test_id == "sys_os":
-                ver = props.get("ro.build.version.release", "11")
-                sdk = props.get("ro.build.version.sdk", "30")
-                message = f"Sistema Operacional: Android {ver} (API {sdk})"
-                details = {"Versão Android": f"Android {ver}", "SDK": sdk, "Build": props.get("ro.build.display.id", "")}
-
-            elif test_id == "sys_patch":
-                patch = props.get("ro.build.version.security_patch", "2023-08-01")
-                message = f"Patch de Segurança: {patch} (Boletim de segurança Google)"
-                details = {"Data do Patch": patch, "Status": "Atualizado"}
-
-            elif test_id == "sys_bootloader":
-                unlocked = props.get("ro.boot.flash.locked", "1") == "0" or props.get("ro.bootloader.unlocked", "false") == "true"
-                message = f"Status do Bootloader: {'Desbloqueado (Modificável)' if unlocked else 'Bloqueado (Original de Fábrica)'}"
-                details = {"Bloqueio OEM": "Bloqueado" if not unlocked else "Desbloqueado", "Integridade": "Original"}
-
-            elif test_id == "sys_verified":
-                avb = props.get("ro.boot.verifiedbootstate", "green")
-                message = f"Inicialização Verificada (AVB): Estado {avb.upper()} (Assinaturas originais íntegras)"
-                details = {"AVB State": avb, "Integridade do Kernel": "Original de Fábrica"}
-
-            elif test_id == "sys_encrypt":
-                enc = props.get("ro.crypto.state", "encrypted")
-                message = f"Criptografia de Disco: {'Ativa (FBE - File-Based Encryption)' if enc == 'encrypted' else 'Desativada'}"
-                details = {"Tipo de Criptografia": "FBE (Criptografia baseada em arquivos)", "Proteção de Dados": "Ativa"}
-
-            elif test_id == "sys_knox":
-                message = "Integridade de Garantia / Bit de Segurança: Íntegro (0x0)"
-                details = {"Flag de Garantia": "0x0 (Sem violação de segurança)"}
-
-            elif test_id == "sys_uptime":
-                message = "Tempo de Atividade (Uptime): Kernel estável sem reinicializações anômalas"
-                details = {"Estabilidade do Sistema": "Estável"}
-
-            # --- APLICATIVOS ---
-            elif test_id == "app_3rd":
-                message = "Aplicativos de Usuário Instalados: Pacotes carregados e verificados"
-                details = {"Gerenciador de Pacotes": "Operacional", "Integridade": "Íntegra"}
-
-            elif test_id == "app_sys":
-                message = "Pacotes de Sistema: Módulos essenciais do fabricante ativos"
-                details = {"Framework Android": "Completo", "Serviços Base": "Ativos"}
-
-            elif test_id == "app_dis":
-                message = "Aplicativos Desabilitados: Nenhum serviço crítico desativado"
-                details = {"Serviços Críticos Desativados": "0"}
-
-            elif test_id == "app_sus":
-                message = "Análise de Bloatware / Adware: Nenhum processo malicioso detectado"
-                details = {"Varredura de Assinaturas": "Aprovada", "Ameaças Conhecidas": "Nenhuma"}
-
-            # --- PROCESSOS ---
-            elif test_id == "proc_cpu":
-                message = "Processos Consumidores de CPU: Escalonamento equilibrado"
-                details = {"Uso de CPU por Processo": "Normal", "Consumo Anômalo": "Não detectado"}
-
-            elif test_id == "proc_mem":
-                message = "Vazamentos de Memória (Memory Leaks): Não detectados nos serviços ativos"
-                details = {"Estabilidade de Memória": "Normal"}
-
-            elif test_id == "proc_anr":
-                message = "Verificação de Falhas (ANR / Travamentos): Nenhum travamento de app recente"
-                details = {"Histórico de ANR": "Limpo", "Respostas de UI": "Fluida"}
-
-            elif test_id == "proc_srv":
-                message = "Serviços em Segundo Plano: Serviços nativos operando normalmente"
-                details = {"Serviços Nativos": "Operacionais"}
-
-            # --- CONECTIVIDADE ---
-            elif test_id == "conn_usb":
-                message = "Configuração USB: Modo ADB + MTP autorizado e conectado"
-                details = {"Conexão Física": "USB 2.0 / USB 3.0", "Canal de Dados": "Ativo"}
-
-            elif test_id == "conn_adb":
-                message = "Autorização ADB: Chave RSA aceita e comunicação criptografada ativa"
-                details = {"Handshake RSA": "Autorizado", "Permissões de Diagnóstico": "Liberadas"}
-
-            elif test_id == "conn_fastboot":
-                message = "Capacidade de Bootloader: Suporta comandos Fastboot padrão"
-                details = {"Partições Suportadas": "boot, recovery, system, vendor, userdata", "Modo": "Suportado"}
-
-            else:
-                message = f"Teste {test_info['name']} executado com sucesso."
-                details = {"Status": "OK"}
-
-        except Exception as e:
-            status = TestStatus.FAILED
-            message = f"Falha na leitura do teste: {e}"
-            details = {"Erro": str(e)}
-
-        duration_ms = int((time.time() - start) * 1000)
-        return TestResult(
-            test_id=test_id,
-            name=test_info["name"],
-            category=test_info["category"],
-            status=status,
-            message=message,
-            details=details,
-            duration_ms=duration_ms,
-        )
+            if fn is None:
+                raise _NotMeasured("teste não implementado")
+            status, msg, details = fn()
+        except _NotMeasured as nm:
+            status, msg, details = TestStatus.SKIPPED, f"Não medido: {nm}", {"Motivo": str(nm)}
+        except Exception as exc:  # nunca aprovar em caso de erro
+            logger.error(f"Erro no teste {test_id}: {exc}", exc_info=True)
+            status, msg, details = TestStatus.SKIPPED, f"Não medido: erro ao analisar dados ({exc})", {"Erro": str(exc)}
+        return TestResult(test_id, meta["name"], meta["category"], status, msg, details, int((time.time() - t0) * 1000))
+
+    # ----------------------------------------------------------------- testes
+    # Memória -----------------------------------------------------------------
+    def _t_mem_total(self):
+        m = self._meminfo()
+        self._facts["ram_total_kb"] = m["MemTotal"]
+        gb = m["MemTotal"] / 1024 / 1024
+        note = "Pouca RAM para o Android atual: o aparelho sofre com muitos apps abertos." if gb < 3.0 else (
+            "Capacidade de entrada/intermediária: sensível a excesso de apps em segundo plano." if gb < 4.5 else "RAM confortável.")
+        return TestStatus.INFO, f"{_mb(m['MemTotal'])} instalados — {note}", {"RAM total": _mb(m["MemTotal"]), "Interpretação": note}
+
+    def _t_mem_avail(self):
+        m = self._meminfo()
+        av, tot = m.get("MemAvailable", 0), m["MemTotal"]
+        pct = av * 100 / tot
+        self._facts.update(avail_kb=av, avail_pct=pct, memfree_kb=m.get("MemFree", 0))
+        st = TestStatus.PASSED if pct >= 25 else TestStatus.WARNING if pct >= 12 else TestStatus.FAILED
+        if av < 300 * 1024:
+            st = TestStatus.FAILED
+        verdict = {"passed": "adequada", "warning": "baixa", "failed": "crítica"}[st.value]
+        return st, f"{_mb(av)} disponíveis de {_mb(tot)} ({pct:.0f}%) — {verdict}", {
+            "Critério": "Aprovado ≥ 25% disponível; Atenção 12–25%; Falha < 12% ou < 300 MB",
+            "Disponível": f"{_mb(av)} ({pct:.1f}%)", "Livre bruto": _mb(m.get('MemFree', 0)),
+            "Cache": _mb(m.get('Cached', 0)),
+            "Nota": "MemFree baixo é normal no Android; o que importa é MemAvailable."}
+
+    def _t_mem_swap(self):
+        m = self._meminfo()
+        tot, free = m.get("SwapTotal", 0), m.get("SwapFree", 0)
+        if tot <= 0:
+            return TestStatus.INFO, "Sem swap/zRAM configurado", {}
+        used = tot - free
+        pct = used * 100 / tot
+        self._facts.update(swap_used_kb=used, swap_total_kb=tot, swap_pct=pct)
+        st = TestStatus.PASSED if pct < 30 else TestStatus.WARNING if pct < 60 else TestStatus.FAILED
+        return st, f"{_mb(used)} de {_mb(tot)} em uso ({pct:.0f}%)" + (
+            " — o sistema está usando swap pesadamente (RAM esgotada)" if st != TestStatus.PASSED else ""), {
+            "Critério": "Aprovado < 30% do swap; Atenção 30–60%; Falha ≥ 60%",
+            "Swap usado": _mb(used), "Swap total": _mb(tot),
+            "Por que importa": "Swap alto = RAM insuficiente; o kernel gasta CPU comprimindo/descomprimindo páginas e o aparelho engasga."}
+
+    def _t_mem_state(self):
+        d = self._dmem()
+        status = d.get("status")
+        if not status:
+            raise _NotMeasured("dumpsys meminfo não informou o estado de memória")
+        self._facts["mem_state"] = status
+        self._facts["lost_kb"] = d.get("lost", 0)
+        st = {"normal": TestStatus.PASSED, "moderate": TestStatus.WARNING}.get(status, TestStatus.FAILED)
+        zr = f" • zRAM: {_mb(d['zram_phys'])} físicos guardando {_mb(d['zram_swap'])}" if "zram_phys" in d else ""
+        return st, f"Android reporta memória '{status}'{zr}", {
+            "Critério": "Aprovado = normal; Atenção = moderate; Falha = low/critical",
+            "Estado": status, "RAM usada": _mb(d.get("used", 0)), "RAM livre+cache": _mb(d.get("free", 0)),
+            "RAM perdida (kernel/GPU)": _mb(d.get("lost", 0))}
+
+    def _t_mem_bgproc(self):
+        m = re.search(r"(\d+) total", self._need("lru"))
+        if not m:
+            raise _NotMeasured("lista LRU de processos indisponível")
+        n = int(m.group(1))
+        self._facts["lru"] = n
+        st = TestStatus.PASSED if n <= 90 else TestStatus.WARNING if n <= 130 else TestStatus.FAILED
+        return st, f"{n} processos mantidos na memória" + (" — acima do ideal para este aparelho" if st != TestStatus.PASSED else ""), {
+            "Critério": "Aprovado ≤ 90; Atenção 91–130; Falha > 130 (heurística para aparelhos de ~4 GB)",
+            "Processos": n}
+
+    def _t_mem_lmk(self):
+        ev = self._events()
+        k = ev["kills"]
+        span = ev["span_min"]
+        if span < 5:
+            raise _NotMeasured("janela do log de eventos muito curta para estimar taxa")
+        per_h = len(k) * 60 / span
+        self._facts.update(kills=len(k), kill_rate=per_h, kill_span=span)
+        reasons = Counter(k).most_common(4)
+        st = TestStatus.PASSED if per_h <= 30 else TestStatus.WARNING if per_h <= 100 else TestStatus.FAILED
+        rs = ", ".join(f"{r} ×{c}" for r, c in reasons) or "nenhum"
+        return st, f"{len(k)} apps encerrados em {span / 60:.1f} h (≈{per_h:.0f}/h) — motivos: {rs}", {
+            "Critério": "Aprovado ≤ 30/h; Atenção 31–100/h; Falha > 100/h",
+            "Encerramentos": len(k), "Janela": f"{span / 60:.1f} h", "Motivos": rs,
+            "Nota": "'LockScreenClean' = a MIUI mata apps ao bloquear a tela; 'empty/cached' = falta de RAM."}
+
+    # CPU ---------------------------------------------------------------------
+    def _t_cpu_load(self):
+        c = self._cpuinfo()
+        self._facts["cpu_total"] = c["total"]
+        st = TestStatus.PASSED if c["total"] < 50 else TestStatus.WARNING if c["total"] < 75 else TestStatus.FAILED
+        if c["iowait"] >= 8 and st == TestStatus.PASSED:
+            st = TestStatus.WARNING
+        return st, f"{c['total']:.0f}% total ({c['user']:.0f}% usuário + {c['kernel']:.0f}% kernel + {c['iowait']:.1f}% espera de disco)", {
+            "Critério": "Aprovado < 50%; Atenção 50–75% (ou iowait ≥ 8%); Falha ≥ 75%",
+            "Janela": "últimos ~minutos (dumpsys cpuinfo)", "Total": f"{c['total']}%"}
+
+    def _freqs(self) -> List[Tuple[int, int, int, int, str]]:
+        rows = []
+        for l in self._need("cpufreq").splitlines():
+            p = l.split()
+            if len(p) >= 5 and p[0].startswith("cpu"):
+                rows.append((int(p[0][3:]), _int(p[1]), _int(p[2]), _int(p[3]), p[4]))
+        if not rows:
+            raise _NotMeasured("frequências da CPU inacessíveis neste aparelho")
+        return rows
+
+    def _t_cpu_throttle(self):
+        rows = self._freqs()
+        ratios = [(i, mx / hw) for i, cur, mx, hw, g in rows if hw > 0]
+        worst = min(r for _, r in ratios)
+        groups: Dict[int, List[int]] = {}
+        for i, cur, mx, hw, g in rows:
+            groups.setdefault(hw, []).append(mx)
+        desc = " | ".join(f"hardware {hw / 1e6:.2f} GHz → limitado a {max(v) / 1e6:.2f} GHz ({max(v) * 100 / hw:.0f}%)" for hw, v in sorted(groups.items()))
+        self._facts.update(cpu_worst_ratio=worst, cpu_cap_desc=desc)
+        st = TestStatus.PASSED if worst >= 0.95 else TestStatus.WARNING if worst >= 0.75 else TestStatus.FAILED
+        return st, desc, {
+            "Critério": "Aprovado ≥ 95% do máximo de hardware; Atenção 75–95%; Falha < 75%",
+            "Pior núcleo": f"{worst * 100:.0f}% do máximo",
+            "Significado": "Frequência máxima permitida pelo sistema abaixo da capacidade do chip (limite térmico, de bateria ou de perfil de energia)."}
+
+    def _t_cpu_cores(self):
+        on = self._need("cpuonline").split("\n")
+        if len(on) < 2:
+            raise _NotMeasured("lista de núcleos indisponível")
+
+        def count(s: str) -> int:
+            n = 0
+            for part in s.strip().split(","):
+                if "-" in part:
+                    a, b = part.split("-")
+                    n += int(b) - int(a) + 1
+                elif part.strip().isdigit():
+                    n += 1
+            return n
+        n_on, n_all = count(on[0]), count(on[1])
+        st = TestStatus.PASSED if n_on >= n_all else TestStatus.WARNING
+        return st, f"{n_on} de {n_all} núcleos online", {"Critério": "Aprovado = todos os núcleos online", "Online": on[0], "Possíveis": on[1]}
+
+    def _t_cpu_gov(self):
+        gov = Counter(r[4] for r in self._freqs())
+        return TestStatus.INFO, ", ".join(f"{g} ×{c}" for g, c in gov.items()), {"Governadores": dict(gov)}
+
+    # Armazenamento ---------------------------------------------------------------
+    def _t_sto_free(self):
+        m = re.search(r"Data-Free: (\d+)K / (\d+)K total = (\d+)% free", self._need("diskstats"))
+        if not m:
+            raise _NotMeasured("diskstats sem Data-Free")
+        free, tot, pct = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        self._facts.update(data_free_kb=free, data_total_kb=tot, data_free_pct=pct)
+        st = TestStatus.PASSED if pct >= 15 else TestStatus.WARNING if pct >= 8 else TestStatus.FAILED
+        return st, f"{_mb(free)} livres de {_mb(tot)} ({pct}%) — espaço {'suficiente' if st == TestStatus.PASSED else 'baixo'}", {
+            "Critério": "Aprovado ≥ 15% livre; Atenção 8–15%; Falha < 8%"}
+
+    def _t_sto_write(self):
+        out = self._need("iotest")
+        m = re.search(r"copied, ([\d.]+) s", out)
+        if not m:
+            raise _NotMeasured(f"teste de escrita não retornou tempo ({out.strip()[:80] or 'sem saída'})")
+        secs = float(m.group(1))
+        mbps = 64 / secs if secs > 0 else 0
+        self._facts["io_mbps"] = mbps
+        st = TestStatus.PASSED if mbps >= 40 else TestStatus.WARNING if mbps >= 15 else TestStatus.FAILED
+        return st, f"{mbps:.0f} MB/s (64 MB em {secs:.2f} s) — memória interna {'saudável' if st == TestStatus.PASSED else 'lenta'}", {
+            "Critério": "Aprovado ≥ 40 MB/s; Atenção 15–40; Falha < 15 (escrita sequencial com fsync)",
+            "Velocidade": f"{mbps:.1f} MB/s", "Tempo": f"{secs:.3f} s"}
+
+    def _t_sto_latency(self):
+        m = re.search(r"Latency: (\d+)ms", self._need("diskstats"))
+        if not m:
+            raise _NotMeasured("diskstats sem latência")
+        ms = int(m.group(1))
+        self._facts["io_latency_ms"] = ms
+        st = TestStatus.PASSED if ms <= 100 else TestStatus.WARNING if ms <= 500 else TestStatus.FAILED
+        return st, f"{ms} ms para escrita de 512 B", {"Critério": "Aprovado ≤ 100 ms; Atenção ≤ 500 ms; Falha > 500 ms"}
+
+    def _t_sto_mount(self):
+        line = self._need("mounts").strip()
+        if not line:
+            raise _NotMeasured("/data não encontrado em /proc/mounts")
+        rw = re.search(r"\brw\b", line) is not None
+        return (TestStatus.PASSED if rw else TestStatus.FAILED), (
+            "/data montado em leitura e escrita" if rw else "/data montado SOMENTE LEITURA — indica corrupção/falha da memória"), {
+            "Critério": "Aprovado = rw", "Linha": line[:120]}
+
+    def _t_sto_break(self):
+        txt = self._need("diskstats")
+        parts = []
+        for label, key in (("Apps", "App Size"), ("Fotos", "Photos Size"), ("Vídeos", "Videos Size"),
+                           ("Áudio", "Audio Size"), ("Sistema", "System Size"), ("Outros", "Other Size")):
+            m = re.search(rf"^{key}: (\d+)", txt, re.M)
+            if m:
+                parts.append(f"{label} {int(m.group(1)) / 1024 ** 3:.1f} GB")
+        if not parts:
+            raise _NotMeasured("diskstats sem tamanhos")
+        return TestStatus.INFO, " • ".join(parts), {"Detalhe": parts}
+
+    # Bateria ---------------------------------------------------------------------
+    def _batt(self) -> Dict[str, str]:
+        d = {}
+        for m in re.finditer(r"^\s*([A-Za-z ]+): (.+)$", self._need("battery"), re.M):
+            d[m.group(1).strip().lower()] = m.group(2).strip()
+        if "level" not in d:
+            raise _NotMeasured("dumpsys battery sem nível")
+        return d
+
+    def _t_batt_level(self):
+        b = self._batt()
+        lvl = int(b["level"])
+        self._facts["batt_level"] = lvl
+        return (TestStatus.WARNING if lvl < 15 else TestStatus.INFO), f"{lvl}%" + (" — nível muito baixo" if lvl < 15 else ""), {"Nível": f"{lvl}%"}
+
+    def _t_batt_health(self):
+        b = self._batt()
+        code = b.get("health", "")
+        names = {"2": "Boa", "3": "Superaquecida", "4": "Morta", "5": "Sobretensão", "6": "Falha", "7": "Fria", "1": "Desconhecida"}
+        st = TestStatus.PASSED if code == "2" else TestStatus.INFO if code in ("1", "") else TestStatus.FAILED
+        return st, f"Android reporta: {names.get(code, code)} (código {code})", {
+            "Critério": "Aprovado = código 2 (Boa)",
+            "Aviso": "Este código só detecta falhas graves; NÃO mede desgaste. Veja 'Capacidade real estimada'."}
+
+    def _t_batt_temp(self):
+        t = int(self._batt()["temperature"]) / 10
+        self._facts["batt_temp"] = t
+        st = TestStatus.PASSED if t < 40 else TestStatus.WARNING if t < 45 else TestStatus.FAILED
+        return st, f"{t:.1f} °C", {"Critério": "Aprovado < 40 °C; Atenção 40–45; Falha ≥ 45"}
+
+    def _t_batt_volt(self):
+        b = self._batt()
+        v, lvl = int(b["voltage"]), int(b["level"])
+        self._facts["batt_v"] = v
+        st = TestStatus.PASSED
+        note = "coerente com o nível de carga"
+        if lvl >= 40 and v < 3600:
+            st, note = TestStatus.FAILED, "tensão muito baixa para este nível — célula fraca"
+        elif lvl >= 40 and v < 3750:
+            st, note = TestStatus.WARNING, "tensão baixa para este nível"
+        return st, f"{v} mV a {lvl}% — {note}", {
+            "Critério": "Falha se < 3,60 V com ≥ 40% de carga; Atenção < 3,75 V",
+            "Tensão": f"{v / 1000:.3f} V"}
+
+    def _t_batt_capacity(self):
+        b = self._batt()
+        lvl = int(b["level"])
+        txt = self._raw.get("bstats") or ""
+        est = re.search(r"Estimated battery capacity: (\d+) mAh", txt)
+        design = re.search(r"Capacity: (\d+), Computed drain", txt)
+        design_mah = int(design.group(1)) if design else 0
+        est_mah = int(est.group(1)) if est else 0
+        counter = int(b.get("charge counter", "0") or 0)
+        counter_mah = (counter / 1000 / lvl * 100) if lvl >= 15 and counter > 0 else 0
+        if not design_mah or not (est_mah or counter_mah):
+            raise _NotMeasured("Android não expôs capacidade de projeto/estimada (sem root não há charge_full)")
+        pcts = [m * 100 / design_mah for m in (est_mah, counter_mah) if m]
+        pct = sum(pcts) / len(pcts)
+        self._facts.update(batt_cap_pct=pct, batt_design=design_mah, batt_est=est_mah, batt_counter_mah=counter_mah)
+        st = TestStatus.PASSED if pct >= 85 else TestStatus.WARNING if pct >= 70 else TestStatus.FAILED
+        return st, f"≈{pct:.0f}% da capacidade original ({est_mah or counter_mah:.0f} de {design_mah} mAh)" + (
+            " — bateria desgastada" if st != TestStatus.PASSED else ""), {
+            "Critério": "Aprovado ≥ 85%; Atenção 70–85%; Falha < 70% (estimativa)",
+            "Estimativa Android": f"{est_mah} mAh", "Estimativa pelo contador de carga": f"{counter_mah:.0f} mAh",
+            "Projeto": f"{design_mah} mAh",
+            "Aviso": "Valores estimados: sem root o Android 10 não expõe charge_full nem ciclos."}
+
+    def _t_batt_drain(self):
+        m = re.search(r"Computed drain: ([\d.]+), actual drain: ([\d.]+)(?:-([\d.]+))?", self._raw.get("bstats") or "")
+        if not m:
+            raise _NotMeasured("batterystats sem consumo real/contabilizado")
+        comp = float(m.group(1))
+        act = (float(m.group(2)) + float(m.group(3) or m.group(2))) / 2
+        if comp <= 0:
+            raise _NotMeasured("consumo contabilizado = 0")
+        ratio = act / comp
+        self._facts["drain_ratio"] = ratio
+        st = TestStatus.PASSED if ratio < 1.3 else TestStatus.WARNING if ratio < 2.0 else TestStatus.FAILED
+        return st, f"descarga real {act:.0f} mAh vs {comp:.0f} mAh explicados pelos apps (×{ratio:.1f})", {
+            "Critério": "Aprovado < ×1,3; Atenção ×1,3–2,0; Falha ≥ ×2,0",
+            "Significado": "Razão alta = consumo não explicado por apps (hardware, bateria degradada ou estimativa imprecisa)."}
+
+    def _t_batt_charge(self):
+        b = self._batt()
+        src = "USB" if b.get("usb powered") == "true" else "AC" if b.get("ac powered") == "true" else "sem fonte (na bateria)"
+        cur = int(b.get("max charging current", "0") or 0) / 1000
+        return TestStatus.INFO, f"{src}" + (f" — corrente máx. {cur:.0f} mA" if cur else ""), {"Fonte": src}
+
+    # Térmico -------------------------------------------------------------------
+    def _zones(self) -> Dict[str, float]:
+        z: Dict[str, float] = {}
+        for l in self._need("thermal").splitlines():
+            p = l.split()
+            if len(p) == 2 and re.match(r"-?\d+$", p[1]):
+                v = int(p[1]) / 1000.0
+                if 0 < v < 150 and not any(x in p[0] for x in ("lvl", "bcl", "soc")):
+                    z[p[0]] = v
+        if not z:
+            raise _NotMeasured("zonas térmicas inacessíveis")
+        return z
+
+    def _t_therm_cpu(self):
+        z = {k: v for k, v in self._zones().items() if k.startswith("cpu")}
+        if not z:
+            raise _NotMeasured("nenhuma zona térmica de CPU")
+        k, mx = max(z.items(), key=lambda kv: kv[1])
+        self._facts["cpu_temp"] = mx
+        st = TestStatus.PASSED if mx < 55 else TestStatus.WARNING if mx < 70 else TestStatus.FAILED
+        return st, f"máx. {mx:.1f} °C ({k}) em {len(z)} sensores", {"Critério": "Aprovado < 55 °C; Atenção 55–70; Falha ≥ 70", **{a: f"{b:.1f} °C" for a, b in z.items()}}
+
+    def _t_therm_board(self):
+        z = {k: v for k, v in self._zones().items() if k in ("xo-therm-adc", "quiet-therm-adc", "pm6125-tz", "pmi632-tz", "rf-pa0-therm-adc", "conn-therm-adc", "camera-ftherm-adc", "backlight_therm")}
+        if not z:
+            raise _NotMeasured("sensores de placa não encontrados")
+        k, mx = max(z.items(), key=lambda kv: kv[1])
+        st = TestStatus.PASSED if mx < 45 else TestStatus.WARNING if mx < 60 else TestStatus.FAILED
+        return st, f"máx. {mx:.1f} °C ({k})", {"Critério": "Aprovado < 45 °C; Atenção 45–60; Falha ≥ 60", **{a: f"{b:.1f} °C" for a, b in z.items()}}
+
+    def _t_therm_storage(self):
+        z = self._zones()
+        k = next((n for n in z if "emmc" in n or "ufs" in n), None)
+        if not k:
+            raise _NotMeasured("sensor de memória interna ausente")
+        st = TestStatus.PASSED if z[k] < 55 else TestStatus.WARNING if z[k] < 70 else TestStatus.FAILED
+        return st, f"{z[k]:.1f} °C", {"Critério": "Aprovado < 55 °C; Atenção 55–70; Falha ≥ 70"}
+
+    # Display ---------------------------------------------------------------------
+    def _t_disp_wake(self):
+        ev = self._events()
+        on, off = ev["wake_on"], ev["wake_off"]
+        allv = on + off
+        if not allv:
+            raise _NotMeasured("sem eventos de tela no log recente (apague e acenda a tela e rode de novo)")
+        worst = max(allv)
+        self._facts.update(wake_on=on, wake_off=off, wake_worst=worst)
+        st = TestStatus.PASSED if worst <= 1000 else TestStatus.WARNING if worst <= 2000 else TestStatus.FAILED
+        return st, f"ligar: {', '.join(f'{x} ms' for x in on) or '—'} | apagar: {', '.join(f'{x} ms' for x in off) or '—'}" + (
+            " — demora anormal" if st != TestStatus.PASSED else ""), {
+            "Critério": "Aprovado ≤ 1000 ms; Atenção ≤ 2000 ms; Falha > 2000 ms",
+            "O que é": "Tempo que o system_server leva para concluir a transição de tela (notificar todos os apps)."}
+
+    def _t_disp_info(self):
+        m = self._need("misc")
+        size = re.search(r"Physical size: (\S+)", m)
+        dens = re.search(r"Physical density: (\d+)", m)
+        if not size:
+            raise _NotMeasured("wm size indisponível")
+        return TestStatus.INFO, f"{size.group(1)} @ {dens.group(1) if dens else '?'} dpi", {}
+
+    # Sensores --------------------------------------------------------------------
+    def _t_sen_core(self):
+        m = self._need("misc")
+        sens = m.split("===SENS", 1)[-1].split("===WM", 1)[0]
+        need = {"Acelerômetro": "android.sensor.accelerometer", "Giroscópio": "android.sensor.gyroscope",
+                "Proximidade": "android.sensor.proximity", "Luminosidade": "android.sensor.light",
+                "Bússola": "android.sensor.magnetic_field("}
+        have = {k: (v in sens) for k, v in need.items()}
+        if not sens.strip():
+            raise _NotMeasured("sensorservice sem lista de sensores")
+        missing = [k for k, ok in have.items() if not ok]
+        crit = [k for k in missing if k in ("Acelerômetro", "Proximidade")]
+        st = TestStatus.FAILED if crit else TestStatus.WARNING if missing else TestStatus.PASSED
+        return st, ("Todos presentes" if not missing else f"Ausentes: {', '.join(missing)}") + " (presença no sistema; não mede precisão)", {
+            "Critério": "Aprovado = todos listados no sensorservice", **{k: "presente" if v else "AUSENTE" for k, v in have.items()}}
+
+    # Rede ------------------------------------------------------------------------
+    def _t_net_wifi(self):
+        w = (self._need("misc").split("===SENS", 1)[0]).strip()
+        if "SSID" not in w:
+            raise _NotMeasured("Wi-Fi sem informação (desconectado ou desligado)")
+        rssi = re.search(r"RSSI: (-?\d+)", w)
+        spd = re.search(r"Link speed: (\d+)Mbps", w)
+        ssid = re.search(r"SSID: ([^,]+)", w)
+        r = int(rssi.group(1)) if rssi else -100
+        st = TestStatus.PASSED if r >= -67 else TestStatus.WARNING if r >= -80 else TestStatus.FAILED
+        return st, f"{ssid.group(1) if ssid else '?'}: {r} dBm, link {spd.group(1) if spd else '?'} Mbps", {
+            "Critério": "Aprovado ≥ -67 dBm; Atenção -67 a -80; Falha < -80"}
+
+    # Sistema ---------------------------------------------------------------------
+    def _t_sys_version(self):
+        p = self._facts.get("props", {})
+        a, sdk = p.get("ro.build.version.release"), p.get("ro.build.version.sdk")
+        if not a:
+            raise _NotMeasured("propriedades indisponíveis")
+        miui = p.get("ro.miui.ui.version.name")
+        build = p.get("ro.build.version.incremental", "")
+        self._facts.update(android=a, miui=miui, build=build)
+        return TestStatus.INFO, f"Android {a} (API {sdk})" + (f" • MIUI {miui} {build}" if miui else ""), {
+            "Fingerprint": p.get("ro.build.fingerprint", "")}
+
+    def _t_sys_patch(self):
+        patch = self._facts.get("props", {}).get("ro.build.version.security_patch", "")
+        try:
+            d = datetime.strptime(patch, "%Y-%m-%d")
+        except ValueError:
+            raise _NotMeasured("patch de segurança não informado")
+        months = (self._now().year - d.year) * 12 + self._now().month - d.month
+        self._facts["patch_months"] = months
+        st = TestStatus.PASSED if months <= 12 else TestStatus.WARNING
+        return st, f"{patch} — {months} meses atrás" + (" (sistema desatualizado)" if st != TestStatus.PASSED else ""), {
+            "Critério": "Aprovado ≤ 12 meses; Atenção > 12 meses",
+            "Impacto": "Versões antigas mantêm bugs de memória/estabilidade já corrigidos em atualizações."}
+
+    def _t_sys_uptime(self):
+        up = (self._need("misc").split("===UP", 1)[-1]).split()
+        if not up:
+            raise _NotMeasured("uptime indisponível")
+        days = float(up[0]) / 86400
+        self._facts["uptime_days"] = days
+        st = TestStatus.PASSED if days < 7 else TestStatus.WARNING if days < 30 else TestStatus.FAILED
+        return st, f"{days:.1f} dias sem reiniciar", {"Critério": "Aprovado < 7 dias; Atenção 7–30; Falha ≥ 30"}
+
+    def _t_sys_stability(self):
+        d = self._dropbox()
+        now = self._now()
+        boots = d.get("SYSTEM_BOOT", [])
+        wd = d.get("system_server_watchdog", [])
+        crash = d.get("system_server_crash", []) + d.get("SYSTEM_RESTART", [])
+        recent_boots = [b for b in boots if (now - b).days < 7]
+        self._facts.update(boots7=len(recent_boots), watchdog=len(wd), sys_crash=len(crash))
+        st = TestStatus.PASSED
+        if wd or crash:
+            st = TestStatus.FAILED
+        elif len(recent_boots) >= 3:
+            st = TestStatus.WARNING
+        return st, f"{len(recent_boots)} boots em 7 dias • {len(wd)} watchdog • {len(crash)} quedas do system_server", {
+            "Critério": "Falha se houve watchdog/queda do system_server; Atenção ≥ 3 boots em 7 dias",
+            "Nota": "O DropBox guarda poucos dias; ausência de registro não prova ausência de problema antigo."}
+
+    def _settings(self) -> List[str]:
+        p = self._need("settings").split()
+        if len(p) < 3:
+            raise _NotMeasured("settings indisponível")
+        return p
+
+    def _t_sys_anim(self):
+        p = self._settings()[:3]
+        vals = [_float(x, 1.0) for x in p]
+        st = TestStatus.PASSED if max(vals) <= 1.0 else TestStatus.WARNING
+        return st, f"janela {p[0]}x • transição {p[1]}x • animador {p[2]}x", {"Critério": "Aprovado ≤ 1,0x"}
+
+    def _t_sys_saver(self):
+        p = self._settings()
+        on = len(p) > 3 and p[3] == "1"
+        self._facts["saver_on"] = on
+        return (TestStatus.WARNING if on else TestStatus.PASSED), (
+            "Economia de energia ATIVA — limita CPU e segundo plano" if on else "Economia de energia desligada"), {
+            "Critério": "Aprovado = desligada"}
+
+    def _t_sys_boot(self):
+        p = self._facts.get("props", {})
+        vb, lock = p.get("ro.boot.verifiedbootstate"), p.get("ro.boot.flash.locked")
+        if vb is None and lock is None:
+            raise _NotMeasured("propriedades de boot indisponíveis")
+        return TestStatus.INFO, f"Verified boot: {vb or '?'} • bootloader {'bloqueado' if lock == '1' else 'desbloqueado' if lock == '0' else '?'}", {}
+
+    # Apps ------------------------------------------------------------------------
+    def _t_app_user(self):
+        n = len(self._user_pkgs())
+        self._facts["user_apps"] = n
+        st = TestStatus.PASSED if n <= 60 else TestStatus.WARNING if n <= 90 else TestStatus.FAILED
+        return st, f"{n} apps de terceiros", {"Critério": "Aprovado ≤ 60; Atenção 61–90; Falha > 90 (heurística para ~4 GB de RAM)"}
+
+    def _t_app_heavy(self):
+        up = self._user_pkgs()
+        procs = [(kb, n) for kb, n, _ in self._dmem()["procs"] if n.split(":")[0] in up]
+        if not procs:
+            return TestStatus.INFO, "Nenhum app de terceiros entre os maiores consumidores", {}
+        agg: Dict[str, int] = {}
+        for kb, n in procs:
+            agg[n.split(":")[0]] = agg.get(n.split(":")[0], 0) + kb
+        top = sorted(agg.items(), key=lambda kv: -kv[1])[:5]
+        self._facts["heavy_apps"] = top
+        st = TestStatus.WARNING if top[0][1] > 200 * 1024 else TestStatus.PASSED
+        return st, " • ".join(f"{n.split('.')[-1] if n.count('.') else n} {_mb(kb)}" for n, kb in top), {
+            "Critério": "Atenção se algum app de terceiros > 200 MB agora", **{n: _mb(kb) for n, kb in top}}
+
+    def _t_app_bloat(self):
+        allp = {l.split(":", 1)[1].strip() for l in self._need("pkgs_all").splitlines() if l.startswith("package:")}
+        pss = {n.split(":")[0]: kb for kb, n, _ in self._dmem()["procs"]}
+        cpu = {n.split(":")[0]: c for c, n, _ in self._cpuinfo()["procs"]}
+        found = [(p, d) for p, d in KNOWN_HEAVY.items() if p in allp]
+        self._facts["bloat"] = [(p, d, pss.get(p, 0), cpu.get(p, 0.0)) for p, d in found]
+        if not found:
+            return TestStatus.PASSED, "Nenhum serviço residente pesado conhecido encontrado", {"Critério": "Aprovado = nenhum da lista de conhecidos"}
+        active = [(p, pss.get(p, 0), cpu.get(p, 0.0)) for p, _ in found if pss.get(p) or cpu.get(p)]
+        st = TestStatus.WARNING if active else TestStatus.INFO
+        txt = " • ".join(f"{p.split('.')[-1]} ({_mb(m)}, {c:.0f}% CPU)" for p, m, c in active) or f"{len(found)} instalados, inativos agora"
+        return st, txt, {"Critério": "Atenção se algum estiver ativo consumindo RAM/CPU", **{p: d for p, d in found}}
+
+    # Processos -------------------------------------------------------------------
+    def _t_proc_cpu(self):
+        c = self._cpuinfo()
+        top = [(p, n) for p, n, _ in c["procs"] if n.split(":")[0].split("/")[0] not in SYSTEM_PROCS][:5]
+        if not top:
+            return TestStatus.INFO, "Sem consumidores relevantes", {}
+        self._facts["cpu_top"] = top
+        mx = top[0][0]
+        st = TestStatus.PASSED if mx < 20 else TestStatus.WARNING if mx < 40 else TestStatus.FAILED
+        return st, " • ".join(f"{n.split(':')[0].split('.')[-1]} {p:.0f}%" for p, n in top[:4]), {
+            "Critério": "Aprovado: nenhum > 20% | Atenção 20–40% | Falha ≥ 40% (janela recente)", **{n: f"{p}%" for p, n in top}}
+
+    def _anr_proc_counts(self) -> Counter:
+        txt = self._need("anr_procs")
+        return Counter(m.group(1) for m in re.finditer(r"^Process: (\S+)", txt, re.M))
+
+    def _t_proc_anr(self):
+        d = self._dropbox()
+        entries = d.get("data_app_anr", []) + d.get("system_app_anr", [])
+        now = self._now()
+        last24 = [e for e in entries if (now - e).total_seconds() < 86400]
+        procs = self._anr_proc_counts() if self._raw.get("anr_procs") is not None else Counter()
+        self._facts.update(anr_total=len(entries), anr_24h=len(last24), anr_procs=procs.most_common(6))
+        st = TestStatus.PASSED if len(last24) == 0 else TestStatus.WARNING if len(last24) <= 5 else TestStatus.FAILED
+        top = ", ".join(f"{p} ×{c}" for p, c in procs.most_common(4))
+        return st, f"{len(last24)} nas últimas 24 h ({len(entries)} no histórico)" + (f" — mais frequentes: {top}" if top else ""), {
+            "Critério": "Aprovado = 0 em 24 h; Atenção 1–5; Falha > 5",
+            "O que é": "ANR = o app/serviço parou de responder por vários segundos (o 'travamento' que você percebe)."}
+
+    def _t_proc_native(self):
+        d = self._dropbox()
+        t = d.get("SYSTEM_TOMBSTONE", []) + d.get("data_app_native_crash", [])
+        txt = self._raw.get("tomb_procs") or ""
+        procs = Counter(re.sub(r"[<> ]", "", m.group(1)) for m in re.finditer(r"^>>> (.+?) <<<", txt, re.M))
+        procs.update(m.group(1) for m in re.finditer(r"^Process: (\S+)", txt, re.M))
+        self._facts["tombs"] = (len(t), procs.most_common(4))
+        st = TestStatus.PASSED if len(t) < 3 else TestStatus.WARNING if len(t) < 10 else TestStatus.FAILED
+        top = ", ".join(f"{p} ×{c}" for p, c in procs.most_common(3))
+        return st, f"{len(t)} falhas nativas registradas" + (f" — {top}" if top else ""), {
+            "Critério": "Aprovado < 3; Atenção 3–9; Falha ≥ 10"}
+
+    # ---------------------------------------------------------------- análise
+    def analyze(self, results: List[TestResult]) -> Tuple[List[Finding], str]:
+        """Correlaciona os resultados e explica as causas prováveis, com evidências."""
+        f = self._facts
+        by = {r.test_id: r for r in results}
+
+        def bad(*ids: str) -> bool:
+            return any(i in by and by[i].status in (TestStatus.WARNING, TestStatus.FAILED) for i in ids)
+
+        def crit(*ids: str) -> bool:
+            return any(i in by and by[i].status == TestStatus.FAILED for i in ids)
+
+        out: List[Finding] = []
+
+        if bad("mem_avail", "mem_swap", "mem_state", "mem_bgproc"):
+            ev = []
+            if "avail_pct" in f:
+                ev.append(f"RAM disponível {_mb(f['avail_kb'])} ({f['avail_pct']:.0f}% de {_mb(f['ram_total_kb'])})")
+            if "swap_pct" in f:
+                ev.append(f"swap {f['swap_pct']:.0f}% usado ({_mb(f['swap_used_kb'])})")
+            if "lru" in f:
+                ev.append(f"{f['lru']} processos na memória")
+            if f.get("mem_state") and f["mem_state"] != "normal":
+                ev.append(f"Android reporta memória '{f['mem_state']}'")
+            out.append(Finding(
+                "critical" if crit("mem_avail", "mem_swap", "mem_state", "mem_bgproc") else "warning",
+                "Pressão de memória: a RAM está esgotada e o sistema vive em swap",
+                "; ".join(ev) + ".",
+                "Sem RAM livre o Android mata e recarrega apps o tempo todo e usa a CPU para comprimir memória. "
+                "Resultado: lentidão geral, engasgos, apps que reabrem do zero e o system_server ocupado (que atrasa até acender a tela).",
+                "Reduza o que fica residente: desinstale/desative apps que você não usa (lista abaixo), desligue o feed da home (App Vault) "
+                "e os anúncios da MIUI, e evite 'limpadores de memória'. Se continuar com pouca RAM mesmo assim, o limite é do hardware.",
+                ["mem_avail", "mem_swap", "mem_state", "mem_bgproc", "mem_lmk"]))
+
+        if bad("proc_anr"):
+            pr = f.get("anr_procs") or []
+            out.append(Finding(
+                "critical" if crit("proc_anr") else "warning",
+                f"Apps parando de responder (ANR): {f.get('anr_24h', 0)} nas últimas 24 h",
+                f"{f.get('anr_total', 0)} ANRs no histórico do sistema. Mais frequentes: " +
+                (", ".join(f"{p} ×{c}" for p, c in pr) or "origem não identificada") + ".",
+                "Cada ANR é um travamento real percebido por você (a tela congela até o app ou serviço voltar). "
+                "ANR em processos de sistema (SystemUI/launcher/system) deixa o aparelho inteiro travado.",
+                "Atualize ou desinstale os apps que mais aparecem; apps de sistema da MIUI na lista podem ser desativados. "
+                "Reduzir a pressão de memória diminui muito os ANRs.",
+                ["proc_anr"]))
+
+        if bad("disp_wake"):
+            out.append(Finding(
+                "critical" if crit("disp_wake") else "warning",
+                "Demora para ligar/apagar a tela confirmada em medição",
+                f"Transições de tela medidas: ligar {f.get('wake_on')} ms, apagar {f.get('wake_off')} ms (normal ≤ 1000 ms).",
+                "A tela só termina de acender quando o system_server conclui a notificação aos apps. Com RAM esgotada, "
+                "apps travados (ANR) ou processos em swap, essa etapa leva segundos — exatamente o sintoma 'tela apaga e demora a ligar'.",
+                "Resolver a pressão de memória e os ANRs acima. Se mesmo com RAM livre persistir, investigue bateria (queda de tensão) e atualização do sistema.",
+                ["disp_wake"]))
+
+        if bad("cpu_throttle"):
+            temp = f.get("cpu_temp")
+            reason = []
+            if f.get("saver_on"):
+                reason.append("a economia de energia está ligada (causa direta provável)")
+            if temp is not None and temp < 55:
+                reason.append(f"a temperatura é normal ({temp:.0f} °C), então não é superaquecimento")
+            if bad("batt_capacity", "batt_volt"):
+                reason.append("a bateria está desgastada — hipótese: o sistema limita o clock para evitar queda de tensão (não é medição direta; a MIUI também aplica limites por perfil de energia)")
+            out.append(Finding(
+                "warning",
+                "CPU limitada abaixo da capacidade do chip",
+                f"{f.get('cpu_cap_desc', '')}. " + ((reason[0][0].upper() + reason[0][1:] + ("; " + "; ".join(reason[1:]) if len(reason) > 1 else "") + ".") if reason else ""),
+                "O processador está proibido de usar parte da sua velocidade máxima, o que soma à lentidão sob carga.",
+                "Desative economia de energia / modo bateria agressivo em Segurança > Bateria e teste o modo de desempenho. "
+                "Se o limite persistir com temperatura normal, pode estar ligado à bateria degradada ou ao perfil de energia da MIUI.",
+                ["cpu_throttle", "therm_cpu", "sys_saver"]))
+
+        if bad("batt_capacity", "batt_volt", "batt_drain"):
+            pct = f.get("batt_cap_pct")
+            out.append(Finding(
+                "critical" if crit("batt_capacity", "batt_volt") else "warning",
+                f"Bateria desgastada (~{pct:.0f}% da capacidade original)" if pct else "Bateria com sinais de desgaste",
+                (f"Capacidade estimada {f.get('batt_est') or f.get('batt_counter_mah', 0):.0f} mAh de {f.get('batt_design')} mAh de projeto" if pct else "") +
+                (f"; descarga real ×{f['drain_ratio']:.1f} maior que a explicada pelos apps" if "drain_ratio" in f else "") + ".",
+                "Bateria fraca sofre queda de tensão quando a CPU pede energia: o sistema reduz o clock e, nos casos graves, apaga a tela ou desliga sem aviso. "
+                "Também reduz a autonomia.",
+                "Se houver desligamentos/apagões inesperados ou autonomia ruim, troque a bateria — é o que mais devolve estabilidade nesse perfil de desgaste. "
+                "Valores são estimativas (Android 10 sem root não expõe os ciclos).",
+                ["batt_capacity", "batt_volt", "batt_drain"]))
+
+        heavy = f.get("heavy_apps") or []
+        cputop = f.get("cpu_top") or []
+        bloat = [b for b in f.get("bloat", []) if b[2] or b[3]]
+        if bad("app_heavy", "app_bloat", "proc_cpu", "app_user"):
+            lines = []
+            for p, d, m, c in bloat:
+                lines.append(f"{p} — {d} ({_mb(m)} RAM, {c:.0f}% CPU)")
+            for n, kb in heavy[:3]:
+                lines.append(f"{n} — app de terceiros usando {_mb(kb)} de RAM")
+            for p, n in cputop[:2]:
+                if p >= 20 and not any(n.startswith(b[0]) for b in bloat):
+                    lines.append(f"{n} — {p:.0f}% de CPU na janela recente")
+            out.append(Finding(
+                "warning", "Candidatos concretos a aliviar o aparelho",
+                " | ".join(lines) + f" | {f.get('user_apps', '?')} apps de terceiros instalados.",
+                "São os processos que mais ocupam RAM/CPU agora e ficam residentes em segundo plano, alimentando a pressão de memória.",
+                "Revise esta lista: desinstale o que não usa e desative os serviços MIUI/Facebook residentes (reversível). "
+                "A ferramenta não remove nada sem sua ação.",
+                ["app_heavy", "app_bloat", "proc_cpu", "app_user"]))
+
+        if bad("sys_patch"):
+            out.append(Finding(
+                "warning", "Sistema desatualizado",
+                f"Patch de segurança de {f.get('patch_months', '?')} meses atrás; Android {f.get('android', '?')}" + (f", MIUI {f.get('miui')} {f.get('build')}" if f.get('miui') else "") + ".",
+                "Builds antigas mantêm problemas conhecidos de gerenciamento de memória e estabilidade que já foram corrigidos.",
+                "Verifique se há atualização oficial em Configurações > Sobre o telefone. Se não houver, considere ROM atualizada.",
+                ["sys_patch", "sys_version"]))
+
+        if bad("sys_stability"):
+            out.append(Finding(
+                "critical", "Quedas/reinicializações do sistema registradas",
+                by["sys_stability"].message,
+                "Watchdog/queda do system_server significam que o Android inteiro travou ou reiniciou — compatível com os 'apagões' relatados.",
+                "Priorize memória, bateria e atualização; exporte o relatório se for levar à assistência.",
+                ["sys_stability"]))
+
+        # O que foi DESCARTADO (também é resposta ao usuário)
+        cleared = []
+        if "data_free_pct" in f and not bad("sto_free"):
+            cleared.append(f"espaço livre ({_mb(f['data_free_kb'])}, {f['data_free_pct']}%)")
+        if "io_mbps" in f and not bad("sto_write", "sto_latency"):
+            cleared.append(f"velocidade da memória interna ({f['io_mbps']:.0f} MB/s de escrita)")
+        if "cpu_temp" in f and not bad("therm_cpu", "therm_board"):
+            cleared.append(f"temperatura ({f['cpu_temp']:.0f} °C)")
+        if cleared:
+            out.append(Finding(
+                "info", "Descartado como causa: " + ", ".join(cleared),
+                "Medido com teste real de escrita e leitura de sensores.",
+                "Ter espaço livre não evita lentidão: o gargalo aqui é RAM/swap e processos, não o armazenamento.",
+                "Nenhuma ação necessária nesses itens.", ["sto_free", "sto_write", "sto_latency", "therm_cpu"]))
+
+        order = {"critical": 0, "warning": 1, "info": 2}
+        out.sort(key=lambda x: order[x.severity])
+        causes = [x.title for x in out if x.severity != "info"][:3]
+        skipped = [r.name for r in results if r.status == TestStatus.SKIPPED]
+        summary = ("Causas prováveis: " + " • ".join(causes) + ".") if causes else \
+            "Nenhuma anomalia relevante foi medida nos itens avaliados."
+        if skipped:
+            summary += f" ({len(skipped)} itens não puderam ser medidos neste aparelho.)"
+        return out, summary
+
+    # ------------------------------------------------------------ API em lote
+    @staticmethod
+    def score(results: List[TestResult]) -> int:
+        m = [r for r in results if r.status in (TestStatus.PASSED, TestStatus.WARNING, TestStatus.FAILED)]
+        if not m:
+            return 0
+        pts = sum(100 if r.status == TestStatus.PASSED else 50 if r.status == TestStatus.WARNING else 0 for r in m)
+        return int(pts / len(m))
+
+    def build_report(self, serial: str, start: datetime, results: List[TestResult]) -> DiagnosticReport:
+        findings, summary = self.analyze(results)
+        cnt = Counter(r.status for r in results)
+        return DiagnosticReport(
+            device_serial=serial, start_time=start, end_time=datetime.now(),
+            overall_score=self.score(results),
+            passed_count=cnt[TestStatus.PASSED], warning_count=cnt[TestStatus.WARNING],
+            failed_count=cnt[TestStatus.FAILED], skipped_count=cnt[TestStatus.SKIPPED],
+            info_count=cnt[TestStatus.INFO], results=results, findings=findings, summary=summary)
 
     def run_all_tests(self, serial: str, progress_callback: Optional[Callable[[int, str], None]] = None) -> DiagnosticReport:
-        report = DiagnosticReport(
-            device_serial=serial,
-            start_time=datetime.now(),
-            end_time=datetime.now(),
-        )
-        total = len(self._tests_metadata)
-
-        for idx, t in enumerate(self._tests_metadata):
+        start = datetime.now()
+        self.collect(serial, (lambda i, n, label: progress_callback(int(i * 50 / n), label)) if progress_callback else None)
+        results = []
+        tests = self.get_available_tests()
+        for i, t in enumerate(tests):
             if progress_callback:
-                pct = int((idx / total) * 100)
-                progress_callback(pct, f"Testando: {t['name']}")
-
-            res = self.run_test(serial, t["id"])
-            report.results.append(res)
-
-            if res.status == TestStatus.PASSED:
-                report.passed_count += 1
-            elif res.status == TestStatus.WARNING:
-                report.warning_count += 1
-            elif res.status == TestStatus.FAILED:
-                report.failed_count += 1
-            else:
-                report.skipped_count += 1
-
-        report.end_time = datetime.now()
-
-        if total > 0:
-            score_pts = (report.passed_count * 1.0) + (report.warning_count * 0.7)
-            report.overall_score = max(0, min(100, int((score_pts / total) * 100)))
-
+                progress_callback(50 + int(i * 50 / len(tests)), f"Analisando: {t['name']}")
+            results.append(self.run_test(serial, t["id"]))
         if progress_callback:
             progress_callback(100, "Diagnóstico completo.")
+        return self.build_report(serial, start, results)
 
-        return report
+
+class _NotMeasured(Exception):
+    """O dado necessário não pôde ser lido do aparelho (resulta em SKIPPED, nunca em aprovado)."""

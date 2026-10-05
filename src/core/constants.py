@@ -33,6 +33,7 @@ class TestStatus(Enum):
     WARNING = "warning"
     FAILED = "failed"
     SKIPPED = "skipped"
+    INFO = "info"
 
 class BatteryHealth(Enum):
     """Saúde da bateria."""

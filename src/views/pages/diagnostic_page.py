@@ -1,6 +1,7 @@
 """
 Página de Diagnóstico Avançado.
 Interface limpa, compacta e orientada a inspeção técnica de hardware e sistema Android.
+Com painel de causas raiz e correlação de evidências reais coletadas via ADB/kernel.
 """
 from typing import Optional, Dict
 
@@ -12,15 +13,16 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QFont
 
-from src.core.constants import DeviceMode
+from src.core.constants import DeviceMode, TestStatus
 from src.viewmodels.diagnostic_vm import DiagnosticViewModel, TestResult, DiagnosticReport
-from src.views.widgets.test_item_widget import TestItemWidget, TestStatus
+from src.views.widgets.test_item_widget import TestItemWidget
 from src.views.widgets.action_guide_card import ActionGuideCard
+from src.views.widgets.findings_card import FindingsCard
 
 
 class DiagnosticPage(QWidget):
     """
-    Página de Diagnóstico Avançado com layout compacto estilo tabela de inspeção.
+    Página de Diagnóstico Avançado com layout de tabela de inspeção e painel de causas raiz.
     """
     
     def __init__(self, parent: Optional[QWidget] = None):
@@ -37,7 +39,7 @@ class DiagnosticPage(QWidget):
     def _setup_ui(self):
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(20, 16, 20, 16)
-        self.main_layout.setSpacing(12)
+        self.main_layout.setSpacing(10)
         
         # --- 1. Header Compacto com Métricas de Resumo ---
         self.header_layout = QHBoxLayout()
@@ -47,12 +49,12 @@ class DiagnosticPage(QWidget):
         self.title_layout = QVBoxLayout()
         self.title_layout.setSpacing(2)
         
-        self.title_label = QLabel("Diagnóstico Avançado de Hardware & Sistema")
-        self.title_label.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+        self.title_label = QLabel("Diagnóstico Técnico de Hardware & Sistema")
+        self.title_label.setFont(QFont("Segoe UI", 17, QFont.Weight.Bold))
         self.title_label.setStyleSheet("color: #f5f5f7;")
         
-        self.subtitle_label = QLabel("65 verificações completas de bateria, processador, RAM, sensores e segurança")
-        self.subtitle_label.setStyleSheet("color: #98989d; font-size: 13px;")
+        self.subtitle_label = QLabel("Medições reais de hardware, kernel, memória RAM, CPU, disco e análise de causas de lentidão")
+        self.subtitle_label.setStyleSheet("color: #98989d; font-size: 12px;")
         
         self.title_layout.addWidget(self.title_label)
         self.title_layout.addWidget(self.subtitle_label)
@@ -62,21 +64,23 @@ class DiagnosticPage(QWidget):
         
         # Badges de Resumo
         self.stats_layout = QHBoxLayout()
-        self.stats_layout.setSpacing(8)
+        self.stats_layout.setSpacing(6)
         
         self.score_label = QLabel("Saúde: 100%")
-        self.score_label.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        self.score_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         self.score_label.setStyleSheet("color: #30d158; padding: 4px 8px;")
         
         self.lbl_passed = self._create_badge("✓ 0 Aprovados", "#30d158")
         self.lbl_warning = self._create_badge("⚠️ 0 Atenção", "#ff9f0a")
         self.lbl_failed = self._create_badge("✗ 0 Falhas", "#ff453a")
-        self.lbl_total = self._create_badge("Total: 0", "#636366")
+        self.lbl_info = self._create_badge("ℹ️ 0 Info", "#64b5ff")
+        self.lbl_total = self._create_badge("Total: 0", "#8e8e93")
         
         self.stats_layout.addWidget(self.score_label)
         self.stats_layout.addWidget(self.lbl_passed)
         self.stats_layout.addWidget(self.lbl_warning)
         self.stats_layout.addWidget(self.lbl_failed)
+        self.stats_layout.addWidget(self.lbl_info)
         self.stats_layout.addWidget(self.lbl_total)
         
         self.header_layout.addLayout(self.stats_layout)
@@ -100,7 +104,7 @@ class DiagnosticPage(QWidget):
         toolbar_layout.setContentsMargins(10, 6, 10, 6)
         toolbar_layout.setSpacing(10)
         
-        self.btn_run_all = QPushButton("▶ Iniciar Diagnóstico")
+        self.btn_run_all = QPushButton("▶ Iniciar Diagnóstico Completo")
         self.btn_run_all.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_run_all.setStyleSheet("""
             QPushButton {
@@ -151,10 +155,18 @@ class DiagnosticPage(QWidget):
         toolbar_layout.addWidget(QLabel("Categoria:"))
         self.filter_combo = QComboBox()
         self.filter_combo.addItems([
-            "Todas as Categorias", "Bateria", "Processador & RAM", 
-            "Armazenamento", "Display", "Sensores", "Térmico", 
-            "Rede & Chip", "Sistema & Segurança", "Aplicativos", 
-            "Processos", "Conectividade USB"
+            "Todas as Categorias", 
+            "Memória RAM & Swap", 
+            "Processador (CPU)", 
+            "Armazenamento & Disco", 
+            "Bateria & Energia", 
+            "Térmico", 
+            "Tela & Display", 
+            "Sensores", 
+            "Rede & Wi-Fi", 
+            "Sistema & Segurança", 
+            "Aplicativos", 
+            "Processos & Falhas"
         ])
         self.filter_combo.setStyleSheet("""
             QComboBox {
@@ -164,7 +176,7 @@ class DiagnosticPage(QWidget):
                 background-color: rgba(0, 0, 0, 0.2);
                 color: #f5f5f7;
                 font-size: 12px;
-                min-width: 140px;
+                min-width: 150px;
             }
         """)
         self.filter_combo.currentIndexChanged.connect(self._on_filter_changed)
@@ -189,7 +201,7 @@ class DiagnosticPage(QWidget):
         
         toolbar_layout.addStretch()
         
-        self.btn_export = QPushButton("💾 Exportar Relatório")
+        self.btn_export = QPushButton("💾 Exportar Relatório Técnico")
         self.btn_export.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_export.setStyleSheet("""
             QPushButton {
@@ -209,7 +221,11 @@ class DiagnosticPage(QWidget):
         
         self.main_layout.addWidget(toolbar_frame)
         
-        # --- 4. Cabeçalho de Colunas da Tabela de Testes ---
+        # --- 4. Card de Diagnóstico de Causas Raiz (Exibido após término) ---
+        self.findings_card = FindingsCard(self)
+        self.main_layout.addWidget(self.findings_card)
+        
+        # --- 5. Cabeçalho de Colunas da Tabela de Testes ---
         cols_frame = QFrame()
         cols_frame.setFixedHeight(24)
         cols_frame.setStyleSheet("background: transparent; border: none;")
@@ -221,7 +237,7 @@ class DiagnosticPage(QWidget):
         lbl_col_name.setStyleSheet("color: #8e8e93; font-size: 11px; font-weight: bold; border: none;")
         lbl_col_name.setFixedWidth(246)
         
-        lbl_col_reading = QLabel("MEDIÇÃO & ACHADO TÉCNICO (TEMPO REAL)")
+        lbl_col_reading = QLabel("MEDIÇÃO REAL & CRITÉRIO TÉCNICO")
         lbl_col_reading.setStyleSheet("color: #8e8e93; font-size: 11px; font-weight: bold; border: none;")
         
         lbl_col_status = QLabel("STATUS")
@@ -234,7 +250,7 @@ class DiagnosticPage(QWidget):
         cols_layout.addWidget(lbl_col_status)
         self.main_layout.addWidget(cols_frame)
         
-        # --- 5. Lista de Testes com Rolagem Suave ---
+        # --- 6. Lista de Testes com Rolagem Suave ---
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
@@ -244,17 +260,17 @@ class DiagnosticPage(QWidget):
         self.list_widget.setStyleSheet("background: transparent;")
         self.list_layout = QVBoxLayout(self.list_widget)
         self.list_layout.setContentsMargins(0, 0, 0, 0)
-        self.list_layout.setSpacing(4) # Espaçamento compacto!
+        self.list_layout.setSpacing(4)
         self.list_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         
         self.scroll_area.setWidget(self.list_widget)
         self.main_layout.addWidget(self.scroll_area, 1)
         
-        # --- 6. Barra de Progresso ---
+        # --- 7. Barra de Progresso ---
         self.progress_layout = QHBoxLayout()
         self.progress_layout.setSpacing(12)
         
-        self.progress_label = QLabel("Pronto")
+        self.progress_label = QLabel("Pronto para iniciar análise técnica")
         self.progress_label.setStyleSheet("color: #98989d; font-size: 12px; min-width: 250px;")
         
         self.progress_bar = QProgressBar()
@@ -288,6 +304,7 @@ class DiagnosticPage(QWidget):
         self.btn_export.clicked.connect(self._on_export_clicked)
         
         self.view_model.diagnostic_started.connect(self._on_diagnostic_started)
+        self.view_model.collection_phase.connect(self._on_collection_phase)
         self.view_model.test_progress.connect(self._on_test_progress)
         self.view_model.test_completed.connect(self._on_test_completed)
         self.view_model.diagnostic_finished.connect(self._on_diagnostic_finished)
@@ -295,23 +312,31 @@ class DiagnosticPage(QWidget):
         self.view_model.stats_updated.connect(self._update_stats)
 
     def _populate_tests(self):
-        """Preenche a lista com todos os 65 testes organizados com nomes e ícones."""
+        """Preenche a lista com todos os testes reais do motor."""
         from src.core.diagnostic_engine import DiagnosticEngine
         
         category_icons = {
-            "battery": "🔋",
-            "cpu": "🧠",
             "memory": "⚡",
+            "cpu": "🧠",
             "storage": "💾",
+            "battery": "🔋",
+            "thermal": "🌡️",
             "display": "📱",
             "sensors": "🧭",
-            "thermal": "🌡️",
             "network": "📶",
             "system": "🛡️",
             "apps": "📦",
             "processes": "⚙️",
-            "connectivity": "🔌",
         }
+        
+        # Limpar widgets anteriores se houver
+        while self.list_layout.count():
+            item = self.list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.test_widgets.clear()
+        self.test_categories.clear()
+        self.view_model.available_tests.clear()
         
         engine = DiagnosticEngine()
         available_tests = engine.get_available_tests()
@@ -332,29 +357,26 @@ class DiagnosticPage(QWidget):
     def _on_filter_changed(self):
         cat_filter = self.filter_combo.currentText()
         cat_map = {
-            "Bateria": "battery",
-            "Processador & RAM": ("cpu", "memory"),
-            "Armazenamento": "storage",
-            "Display": "display",
-            "Sensores": "sensors",
+            "Memória RAM & Swap": "memory",
+            "Processador (CPU)": "cpu",
+            "Armazenamento & Disco": "storage",
+            "Bateria & Energia": "battery",
             "Térmico": "thermal",
-            "Rede & Chip": "network",
+            "Tela & Display": "display",
+            "Sensores": "sensors",
+            "Rede & Wi-Fi": "network",
             "Sistema & Segurança": "system",
             "Aplicativos": "apps",
-            "Processos": "processes",
-            "Conectividade USB": "connectivity",
+            "Processos & Falhas": "processes",
         }
-        target_cats = cat_map.get(cat_filter, None)
+        target_cat = cat_map.get(cat_filter, None)
         query = self.search_input.text().strip().lower()
 
         for tid, widget in self.test_widgets.items():
             cat = self.test_categories.get(tid, "")
             matches_cat = True
-            if target_cats:
-                if isinstance(target_cats, tuple):
-                    matches_cat = cat in target_cats
-                else:
-                    matches_cat = cat == target_cats
+            if target_cat:
+                matches_cat = (cat == target_cat)
             
             matches_query = True
             if query:
@@ -366,14 +388,16 @@ class DiagnosticPage(QWidget):
 
             widget.setVisible(matches_cat and matches_query)
 
-    def _update_stats(self, passed: int, warning: int, failed: int, total: int):
+    def _update_stats(self, passed: int, warning: int, failed: int, info: int, skipped: int, total: int):
         self.lbl_passed.setText(f"✓ {passed} Aprovados")
         self.lbl_warning.setText(f"⚠️ {warning} Atenção")
         self.lbl_failed.setText(f"✗ {failed} Falhas")
+        self.lbl_info.setText(f"ℹ️ {info} Info")
         self.lbl_total.setText(f"Total: {total}")
         
-        if total > 0:
-            score = max(0, int(((passed + (warning * 0.5)) / total) * 100))
+        tested = passed + warning + failed
+        if tested > 0:
+            score = max(0, int(((passed * 100) + (warning * 50)) / tested))
             self.score_label.setText(f"Saúde: {score}%")
             if score >= 80:
                 self.score_label.setStyleSheet("color: #30d158; padding: 4px 8px;")
@@ -393,7 +417,7 @@ class DiagnosticPage(QWidget):
             self.action_guide.hide()
             m = getattr(device_info, 'model', '')
             man = getattr(device_info, 'manufacturer', '')
-            self.subtitle_label.setText(f"Aparelho conectado: {man} {m} (ADB Operacional) • 65 rotinas de hardware liberadas")
+            self.subtitle_label.setText(f"Aparelho conectado: {man} {m} (ADB Operacional) • Rotinas técnicas de hardware liberadas")
         else:
             self.btn_run_all.setEnabled(False)
             self.action_guide.show()
@@ -403,11 +427,13 @@ class DiagnosticPage(QWidget):
         self.current_serial = ""
         self.action_guide.set_disconnected()
         self.action_guide.show()
+        self.findings_card.hide()
         self.btn_run_all.setEnabled(False)
         self.subtitle_label.setText("Conecte um dispositivo Android via USB para iniciar")
 
     @Slot()
     def _on_run_all_clicked(self):
+        self.findings_card.hide()
         for widget in self.test_widgets.values():
             widget.reset()
         serial_to_use = getattr(self, 'current_serial', '')
@@ -426,17 +452,25 @@ class DiagnosticPage(QWidget):
     def _on_diagnostic_started(self, total: int):
         self.btn_run_all.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.progress_bar.setRange(0, total)
+        self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.progress_label.setText("Iniciando diagnósticos de hardware...")
+        self.progress_label.setText("Iniciando coletas de baixo nível no aparelho...")
+
+    @Slot(int, int, str)
+    def _on_collection_phase(self, step: int, total_steps: int, label: str):
+        pct = int(step * 50 / max(1, total_steps))
+        self.progress_bar.setValue(pct)
+        self.progress_label.setText(f"[Coleta no Aparelho {step+1}/{total_steps}] {label}...")
 
     @Slot(int, str)
     def _on_test_progress(self, index: int, test_id: str):
-        self.progress_bar.setValue(index)
+        total = max(1, len(self.test_widgets))
+        pct = 50 + int(index * 50 / total)
+        self.progress_bar.setValue(pct)
         widget = self.test_widgets.get(test_id)
         if widget:
             widget.set_status(TestStatus.RUNNING)
-            self.progress_label.setText(f"Analisando: {widget.name} ({index+1}/{len(self.test_widgets)})...")
+            self.progress_label.setText(f"[Análise Técnica {index+1}/{total}] {widget.name}...")
 
     @Slot(object)
     def _on_test_completed(self, result: TestResult):
@@ -448,9 +482,11 @@ class DiagnosticPage(QWidget):
     def _on_diagnostic_finished(self, report: DiagnosticReport):
         self.btn_run_all.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        self.progress_bar.setValue(self.progress_bar.maximum())
-        self.progress_label.setText(f"Diagnóstico concluído ({report.passed_count} aprovados, {report.warning_count} alertas, {report.failed_count} falhas)")
-        QMessageBox.information(self, "Diagnóstico Concluído", f"Análise completa finalizada com sucesso.\n\nScore de Saúde: {report.overall_score}%\nAprovados: {report.passed_count}\nAlertas: {report.warning_count}\nFalhas: {report.failed_count}")
+        self.progress_bar.setValue(100)
+        self.progress_label.setText(
+            f"Diagnóstico concluído ({report.passed_count} aprovados, {report.warning_count} alertas, {report.failed_count} falhas, {report.info_count} informativos)"
+        )
+        self.findings_card.display_report(report)
 
     @Slot(str)
     def _on_error(self, message: str):

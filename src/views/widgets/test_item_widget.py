@@ -3,7 +3,6 @@ Linha Compacta de Diagnóstico (TestItemWidget).
 Apresenta o resultado técnico diretamente inline de forma limpa, moderna e compacta.
 Elimina caixas expansíveis desnecessárias para leitura rápida e profissional em tela cheia.
 """
-from enum import Enum
 from typing import Optional, Dict, Any
 
 from PySide6.QtWidgets import (
@@ -12,14 +11,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
-
-class TestStatus(Enum):
-    PENDING = "pending"
-    RUNNING = "running"
-    PASSED = "passed"
-    WARNING = "warning"
-    FAILED = "failed"
-    SKIPPED = "skipped"
+# Enum única e compartilhada com o motor (uma cópia local causava linhas presas em "Testando...")
+from src.core.constants import TestStatus
 
 
 class TestItemWidget(QFrame):
@@ -133,7 +126,7 @@ class TestItemWidget(QFrame):
                 padding: 0 8px;
                 border: 1px solid rgba(10, 132, 255, 0.4);
             """)
-            self.result_label.setText("Consultando subsistema de hardware via ADB...")
+            self.result_label.setText("Analisando dados coletados do aparelho...")
             self.result_label.setStyleSheet("color: #0a84ff; font-style: italic; border: none; background: transparent;")
 
         elif status == TestStatus.PASSED:
@@ -170,16 +163,26 @@ class TestItemWidget(QFrame):
             self._render_result_text(message, details, "#ff453a")
 
         elif status == TestStatus.SKIPPED:
-            self.status_badge.setText("Ignorado")
+            self.status_badge.setText("Não medido")
             self.status_badge.setStyleSheet("""
-                background-color: rgba(128, 128, 128, 0.1);
+                background-color: rgba(128, 128, 128, 0.12);
                 color: #8e8e93;
                 border-radius: 11px;
                 padding: 0 8px;
                 border: none;
             """)
-            self.result_label.setText("Teste não aplicável ao hardware deste aparelho")
-            self.result_label.setStyleSheet("color: #636366; border: none; background: transparent;")
+            self._render_result_text(message or "Não foi possível medir neste aparelho", details, "#8e8e93")
+
+        elif status == TestStatus.INFO:
+            self.status_badge.setText("Info")
+            self.status_badge.setStyleSheet("""
+                background-color: rgba(10, 132, 255, 0.14);
+                color: #64b5ff;
+                border-radius: 11px;
+                padding: 0 8px;
+                border: none;
+            """)
+            self._render_result_text(message, details, "#c7d7ea")
 
     def _render_result_text(self, message: str, details: Optional[Dict[str, Any]], color: str):
         """Formata o texto de resultado inline e prepara o tooltip completo com todos os dados."""
@@ -202,7 +205,7 @@ class TestItemWidget(QFrame):
                 tooltip_lines.insert(2, f"<b>Achado:</b> {display_text}")
 
         if not display_text:
-            display_text = "Parâmetros nominais validados"
+            display_text = "—"
 
         self.result_label.setText(display_text)
         self.result_label.setStyleSheet(f"color: {color}; border: none; background: transparent;")

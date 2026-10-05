@@ -17,6 +17,7 @@ logger = get_logger(__name__)
 
 
 class DiagnosticWorkerThread(QThread):
+    phase = Signal(int, int, str)  # etapa atual, total de etapas, descrição da coleta
     progress = Signal(int, str)
     result_ready = Signal(object)
     finished_report = Signal(object)
@@ -33,15 +34,26 @@ class DiagnosticWorkerThread(QThread):
         results = []
         start_time = datetime.now()
 
+        # Fase 1: coleta REAL de dados do aparelho (é a parte demorada do diagnóstico)
+        ok = self._engine.collect(
+            self.serial,
+            lambda i, n, label: None if self._is_cancelled else self.phase.emit(i, n, label),
+        )
+        if self._is_cancelled:
+            return
+        if not ok:
+            self.error.emit(
+                "Não foi possível ler dados do aparelho. Verifique se a depuração USB está autorizada "
+                "e se o cabo/porta estão estáveis, depois tente novamente."
+            )
+            return
+
+        # Fase 2: avaliação de cada teste sobre os dados coletados
         import time
         for i, tid in enumerate(self.test_ids):
             if self._is_cancelled:
                 break
-
             self.progress.emit(i, tid)
-            # Pacing de execução realista para feedback visual de teste
-            time.sleep(0.08)
-
             try:
                 res = self._engine.run_test(self.serial, tid)
             except Exception as e:
@@ -50,34 +62,16 @@ class DiagnosticWorkerThread(QThread):
                     test_id=tid,
                     name=tid,
                     category="unknown",
-                    status=TestStatus.FAILED,
-                    message=f"Falha ao executar teste: {str(e)}",
+                    status=TestStatus.SKIPPED,
+                    message=f"Não medido: {e}",
                     details={"Erro": str(e)},
                 )
-
             results.append(res)
             self.result_ready.emit(res)
+            time.sleep(0.02)  # apenas para a lista atualizar visivelmente linha a linha
 
         if not self._is_cancelled:
-            passed = sum(1 for r in results if r.status == TestStatus.PASSED)
-            warning = sum(1 for r in results if r.status == TestStatus.WARNING)
-            failed = sum(1 for r in results if r.status == TestStatus.FAILED)
-            skipped = sum(1 for r in results if r.status == TestStatus.SKIPPED)
-            total = len(results) or 1
-            score = max(0, int(((passed * 100) + (warning * 50)) / total))
-
-            report = DiagnosticReport(
-                device_serial=self.serial,
-                start_time=start_time,
-                end_time=datetime.now(),
-                overall_score=score,
-                passed_count=passed,
-                warning_count=warning,
-                failed_count=failed,
-                skipped_count=skipped,
-                results=results,
-            )
-            self.finished_report.emit(report)
+            self.finished_report.emit(self._engine.build_report(self.serial, start_time, results))
 
     def cancel(self):
         self._is_cancelled = True
@@ -91,12 +85,13 @@ class DiagnosticViewModel(QObject):
 
     # Sinais
     diagnostic_started = Signal(int)  # total tests
+    collection_phase = Signal(int, int, str)  # current step, total steps, description
     test_progress = Signal(int, str)  # current test index, test name
     test_completed = Signal(object)  # TestResult
     diagnostic_finished = Signal(object)  # DiagnosticReport
     category_filter_changed = Signal(str)
     error_occurred = Signal(str)
-    stats_updated = Signal(int, int, int, int)  # passed, warning, failed, total
+    stats_updated = Signal(int, int, int, int, int, int)  # passed, warning, failed, info, skipped, total
 
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
@@ -113,6 +108,8 @@ class DiagnosticViewModel(QObject):
         self.stat_passed = 0
         self.stat_warning = 0
         self.stat_failed = 0
+        self.stat_info = 0
+        self.stat_skipped = 0
         self.stat_total = 0
 
     def start_diagnostic(self, serial: str, test_ids: Optional[List[str]] = None):
@@ -135,12 +132,15 @@ class DiagnosticViewModel(QObject):
         self.stat_passed = 0
         self.stat_warning = 0
         self.stat_failed = 0
+        self.stat_info = 0
+        self.stat_skipped = 0
 
-        self.stats_updated.emit(0, 0, 0, self.stat_total)
+        self.stats_updated.emit(0, 0, 0, 0, 0, self.stat_total)
         self.diagnostic_started.emit(self.stat_total)
 
         # Thread de execução real
         self._diagnostic_thread = DiagnosticWorkerThread(serial, tests_to_run)
+        self._diagnostic_thread.phase.connect(self._on_collection_phase)
         self._diagnostic_thread.progress.connect(self._on_test_progress)
         self._diagnostic_thread.result_ready.connect(self._on_test_completed)
         self._diagnostic_thread.finished_report.connect(self._on_diagnostic_finished)
@@ -185,6 +185,10 @@ class DiagnosticViewModel(QObject):
             self.error_occurred.emit(f"Falha ao exportar relatório: {str(e)}")
             return ""
 
+    @Slot(int, int, str)
+    def _on_collection_phase(self, step: int, total_steps: int, label: str):
+        self.collection_phase.emit(step, total_steps, label)
+
     @Slot(int, str)
     def _on_test_progress(self, index: int, test_name: str):
         self.test_progress.emit(index, test_name)
@@ -198,8 +202,15 @@ class DiagnosticViewModel(QObject):
             self.stat_failed += 1
         elif status_val == "warning":
             self.stat_warning += 1
+        elif status_val == "info":
+            self.stat_info += 1
+        elif status_val == "skipped":
+            self.stat_skipped += 1
 
-        self.stats_updated.emit(self.stat_passed, self.stat_warning, self.stat_failed, self.stat_total)
+        self.stats_updated.emit(
+            self.stat_passed, self.stat_warning, self.stat_failed,
+            self.stat_info, self.stat_skipped, self.stat_total
+        )
         self.test_completed.emit(result)
 
     @Slot(object)
