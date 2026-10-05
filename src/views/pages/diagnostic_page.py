@@ -17,7 +17,7 @@ from src.core.constants import DeviceMode, TestStatus
 from src.viewmodels.diagnostic_vm import DiagnosticViewModel, TestResult, DiagnosticReport
 from src.views.widgets.test_item_widget import TestItemWidget
 from src.views.widgets.action_guide_card import ActionGuideCard
-from src.views.widgets.findings_card import FindingsCard
+from src.views.dialogs.findings_dialog import FindingsDialog
 
 
 class DiagnosticPage(QWidget):
@@ -221,9 +221,51 @@ class DiagnosticPage(QWidget):
         
         self.main_layout.addWidget(toolbar_frame)
         
-        # --- 4. Card de Diagnóstico de Causas Raiz (Exibido após término) ---
-        self.findings_card = FindingsCard(self)
-        self.main_layout.addWidget(self.findings_card)
+        # --- 4. Banner Compacto de Laudo Técnico (Apenas 40px de altura, não ocupa a tela!) ---
+        self.findings_banner = QFrame()
+        self.findings_banner.setFixedHeight(40)
+        self.findings_banner.setStyleSheet("""
+            QFrame {
+                background-color: rgba(255, 69, 58, 0.15);
+                border: 1px solid rgba(255, 69, 58, 0.4);
+                border-radius: 8px;
+            }
+        """)
+        banner_layout = QHBoxLayout(self.findings_banner)
+        banner_layout.setContentsMargins(14, 0, 14, 0)
+        banner_layout.setSpacing(10)
+
+        self.banner_icon = QLabel("🩺")
+        self.banner_icon.setFont(QFont("Segoe UI Emoji", 13))
+        self.banner_icon.setStyleSheet("border: none; background: transparent;")
+        banner_layout.addWidget(self.banner_icon)
+
+        self.banner_text = QLabel("Laudo de Causas Raiz: Anomalias identificadas no aparelho")
+        self.banner_text.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self.banner_text.setStyleSheet("color: #f5f5f7; border: none; background: transparent;")
+        banner_layout.addWidget(self.banner_text, 1)
+
+        self.btn_view_findings = QPushButton("🔍 Abrir Laudo Técnico Completo")
+        self.btn_view_findings.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_view_findings.setStyleSheet("""
+            QPushButton {
+                background-color: #0a84ff;
+                color: #ffffff;
+                font-weight: bold;
+                font-size: 11px;
+                padding: 5px 14px;
+                border-radius: 6px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #0071e3;
+            }
+        """)
+        self.btn_view_findings.clicked.connect(self._open_findings_dialog)
+        banner_layout.addWidget(self.btn_view_findings)
+
+        self.findings_banner.hide()
+        self.main_layout.addWidget(self.findings_banner)
         
         # --- 5. Cabeçalho de Colunas da Tabela de Testes ---
         cols_frame = QFrame()
@@ -427,13 +469,19 @@ class DiagnosticPage(QWidget):
         self.current_serial = ""
         self.action_guide.set_disconnected()
         self.action_guide.show()
-        self.findings_card.hide()
+        self.findings_banner.hide()
         self.btn_run_all.setEnabled(False)
         self.subtitle_label.setText("Conecte um dispositivo Android via USB para iniciar")
 
+    def _open_findings_dialog(self):
+        """Abre o laudo técnico completo com as causas de lentidão e travamentos."""
+        if getattr(self, '_last_report', None):
+            dlg = FindingsDialog(self._last_report, self)
+            dlg.exec()
+
     @Slot()
     def _on_run_all_clicked(self):
-        self.findings_card.hide()
+        self.findings_banner.hide()
         for widget in self.test_widgets.values():
             widget.reset()
         serial_to_use = getattr(self, 'current_serial', '')
@@ -452,6 +500,7 @@ class DiagnosticPage(QWidget):
     def _on_diagnostic_started(self, total: int):
         self.btn_run_all.setEnabled(False)
         self.btn_stop.setEnabled(True)
+        self.findings_banner.hide()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_label.setText("Iniciando coletas de baixo nível no aparelho...")
@@ -480,13 +529,53 @@ class DiagnosticPage(QWidget):
 
     @Slot(object)
     def _on_diagnostic_finished(self, report: DiagnosticReport):
+        self._last_report = report
         self.btn_run_all.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.progress_bar.setValue(100)
         self.progress_label.setText(
             f"Diagnóstico concluído ({report.passed_count} aprovados, {report.warning_count} alertas, {report.failed_count} falhas, {report.info_count} informativos)"
         )
-        self.findings_card.display_report(report)
+
+        # Atualiza e exibe o banner compacto no topo da lista sem roubar o espaço da tabela
+        if report.failed_count > 0:
+            self.findings_banner.setStyleSheet("""
+                QFrame {
+                    background-color: rgba(255, 69, 58, 0.16);
+                    border: 1px solid rgba(255, 69, 58, 0.45);
+                    border-radius: 8px;
+                }
+            """)
+            self.banner_icon.setText("🚨")
+            self.banner_text.setText(
+                f"Laudo Crítico: {report.failed_count} Problemas Críticos e {report.warning_count} Alertas de Atenção identificados"
+            )
+        elif report.warning_count > 0:
+            self.findings_banner.setStyleSheet("""
+                QFrame {
+                    background-color: rgba(255, 159, 10, 0.16);
+                    border: 1px solid rgba(255, 159, 10, 0.45);
+                    border-radius: 8px;
+                }
+            """)
+            self.banner_icon.setText("⚠️")
+            self.banner_text.setText(
+                f"Laudo de Atenção: {report.warning_count} Pontos de Atenção identificados no aparelho"
+            )
+        else:
+            self.findings_banner.setStyleSheet("""
+                QFrame {
+                    background-color: rgba(48, 209, 88, 0.16);
+                    border: 1px solid rgba(48, 209, 88, 0.45);
+                    border-radius: 8px;
+                }
+            """)
+            self.banner_icon.setText("✓")
+            self.banner_text.setText("Laudo de Conformidade: Parâmetros validados com sucesso")
+
+        self.findings_banner.show()
+        # Abre o Laudo Técnico completo em janela dedicada com espaço confortável
+        self._open_findings_dialog()
 
     @Slot(str)
     def _on_error(self, message: str):
@@ -494,3 +583,4 @@ class DiagnosticPage(QWidget):
         self.btn_stop.setEnabled(False)
         self.progress_label.setText("Diagnóstico cancelado ou com erro")
         QMessageBox.warning(self, "Erro no Diagnóstico", message)
+

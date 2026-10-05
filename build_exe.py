@@ -46,6 +46,14 @@ def build_executable(onefile: bool = False) -> None:
     project_root = Path(__file__).parent.resolve()
     main_script = project_root / "main.py"
     
+    # Encerrar processos em execução para evitar PermissionError ao sobrescrever DLLs/executáveis
+    if sys.platform == "win32":
+        try:
+            subprocess.run(["taskkill", "/f", "/im", "Mobile-Diag-Pro.exe"], capture_output=True)
+        except Exception:
+            pass
+
+    
     if not main_script.exists():
         print(f"Erro: Script principal '{main_script}' não encontrado.")
         sys.exit(1)
@@ -120,6 +128,12 @@ def build_executable(onefile: bool = False) -> None:
     dist_dir = project_root / "dist"
     dist_dir.mkdir(parents=True, exist_ok=True)
     
+    if sys.platform == "win32":
+        try:
+            subprocess.run(["taskkill", "/f", "/im", "Mobile-Diag-Pro.exe"], capture_output=True)
+        except Exception:
+            pass
+
     import shutil
     if onefile:
         built_exe = build_dist / "Mobile-Diag-Pro.exe"
