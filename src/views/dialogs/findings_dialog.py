@@ -114,26 +114,51 @@ class FindingsDialog(QDialog):
         summary_lbl.setWordWrap(True)
         footer_layout.addWidget(summary_lbl, 1)
 
-        btn_close = QPushButton("Fechar")
-        btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_close.setStyleSheet("""
+        btn_optimize = QPushButton("⚡ Corrigir & Otimizar Agora (1-Clique)")
+        btn_optimize.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_optimize.setStyleSheet("""
             QPushButton {
-                background-color: #0a84ff;
-                color: white;
-                font-weight: bold;
+                background-color: #30d158;
+                color: #000000;
+                font-weight: 800;
                 font-size: 13px;
-                padding: 8px 22px;
+                padding: 8px 18px;
                 border-radius: 6px;
                 border: none;
             }
             QPushButton:hover {
-                background-color: #0071e3;
+                background-color: #28b84c;
+            }
+        """)
+        btn_optimize.clicked.connect(self._open_optimizer)
+        footer_layout.addWidget(btn_optimize)
+
+        btn_close = QPushButton("Fechar")
+        btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_close.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.1);
+                color: #f5f5f7;
+                font-weight: bold;
+                font-size: 13px;
+                padding: 8px 22px;
+                border-radius: 6px;
+                border: 1px solid rgba(255, 255, 255, 0.2);
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.2);
             }
         """)
         btn_close.clicked.connect(self.accept)
         footer_layout.addWidget(btn_close)
 
         layout.addLayout(footer_layout)
+
+    def _open_optimizer(self):
+        from src.views.dialogs.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog(self.report.device_serial, self)
+        dlg.exec()
+
 
     def _create_finding_widget(self, finding) -> QFrame:
         frame = QFrame()

@@ -146,6 +146,30 @@ class DiagnosticPage(QWidget):
         """)
         toolbar_layout.addWidget(self.btn_stop)
         
+        self.btn_optimize = QPushButton("⚡ Otimizar Aparelho (1-Clique)")
+        self.btn_optimize.setEnabled(False)
+        self.btn_optimize.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_optimize.setStyleSheet("""
+            QPushButton {
+                background-color: #30d158;
+                color: #000000;
+                font-weight: 800;
+                font-size: 13px;
+                padding: 6px 16px;
+                border-radius: 6px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #28b84c;
+            }
+            QPushButton:disabled {
+                background-color: rgba(48, 209, 88, 0.25);
+                color: #636366;
+            }
+        """)
+        self.btn_optimize.clicked.connect(self._open_optimizer_dialog)
+        toolbar_layout.addWidget(self.btn_optimize)
+
         # Divisor
         div = QLabel("|")
         div.setStyleSheet("color: rgba(255, 255, 255, 0.2); border: none;")
@@ -263,6 +287,25 @@ class DiagnosticPage(QWidget):
         """)
         self.btn_view_findings.clicked.connect(self._open_findings_dialog)
         banner_layout.addWidget(self.btn_view_findings)
+
+        self.btn_banner_optimize = QPushButton("⚡ Corrigir & Otimizar Agora")
+        self.btn_banner_optimize.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_banner_optimize.setStyleSheet("""
+            QPushButton {
+                background-color: #30d158;
+                color: #000000;
+                font-weight: 800;
+                font-size: 11px;
+                padding: 5px 14px;
+                border-radius: 6px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #28b84c;
+            }
+        """)
+        self.btn_banner_optimize.clicked.connect(self._open_optimizer_dialog)
+        banner_layout.addWidget(self.btn_banner_optimize)
 
         self.findings_banner.hide()
         self.main_layout.addWidget(self.findings_banner)
@@ -456,12 +499,14 @@ class DiagnosticPage(QWidget):
         mode = getattr(device_info, 'mode', DeviceMode.UNKNOWN)
         if mode == DeviceMode.ADB_NORMAL:
             self.btn_run_all.setEnabled(True)
+            self.btn_optimize.setEnabled(True)
             self.action_guide.hide()
             m = getattr(device_info, 'model', '')
             man = getattr(device_info, 'manufacturer', '')
             self.subtitle_label.setText(f"Aparelho conectado: {man} {m} (ADB Operacional) • Rotinas técnicas de hardware liberadas")
         else:
             self.btn_run_all.setEnabled(False)
+            self.btn_optimize.setEnabled(False)
             self.action_guide.show()
             self.subtitle_label.setText("Aguardando dispositivo pronto para análise...")
 
@@ -471,6 +516,7 @@ class DiagnosticPage(QWidget):
         self.action_guide.show()
         self.findings_banner.hide()
         self.btn_run_all.setEnabled(False)
+        self.btn_optimize.setEnabled(False)
         self.subtitle_label.setText("Conecte um dispositivo Android via USB para iniciar")
 
     def _open_findings_dialog(self):
@@ -478,6 +524,17 @@ class DiagnosticPage(QWidget):
         if getattr(self, '_last_report', None):
             dlg = FindingsDialog(self._last_report, self)
             dlg.exec()
+
+    def _open_optimizer_dialog(self):
+        """Abre o diálogo de otimização e limpeza do sistema em 1-clique."""
+        serial_to_use = getattr(self, 'current_serial', '')
+        if not serial_to_use:
+            QMessageBox.warning(self, "Aviso", "Nenhum dispositivo conectado para otimização.")
+            return
+        from src.views.dialogs.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog(serial_to_use, self)
+        dlg.exec()
+
 
     @Slot()
     def _on_run_all_clicked(self):

@@ -226,6 +226,19 @@ def main() -> None:
 
     dashboard_page.action_reboot.connect(on_dashboard_reboot)
 
+    def on_dashboard_optimize():
+        serial = device_manager.current_serial
+        if not serial:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(window, "Aviso", "Nenhum dispositivo conectado para otimização.")
+            return
+        from src.views.dialogs.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog(serial, window)
+        dlg.exec()
+
+    dashboard_page.action_optimize.connect(on_dashboard_optimize)
+
+
     # Iniciar monitoramento do device manager
     device_manager.start_monitoring()
 

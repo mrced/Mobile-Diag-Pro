@@ -17,6 +17,8 @@ class DashboardPage(QWidget):
     action_open_shell = Signal()
     action_go_to_diagnostic = Signal()
     action_go_to_flash = Signal()
+    action_optimize = Signal()
+
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -99,11 +101,15 @@ class DashboardPage(QWidget):
         
         self.btn_shell = self._create_action_btn("💻", "Abrir Shell")
         self.btn_shell.clicked.connect(self.action_open_shell)
+
+        self.btn_optimize = self._create_action_btn("⚡", "Otimizar (1-Clique)")
+        self.btn_optimize.clicked.connect(self.action_optimize)
         
         actions_layout.addWidget(self.btn_reboot)
         actions_layout.addWidget(self.btn_screenshot)
         actions_layout.addWidget(self.btn_screen_record)
         actions_layout.addWidget(self.btn_shell)
+        actions_layout.addWidget(self.btn_optimize)
         
         layout.addLayout(actions_layout)
         layout.addStretch()

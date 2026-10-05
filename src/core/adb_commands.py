@@ -1,4 +1,4 @@
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from src.core.adb_client import ADBClient
 from src.utils.parsers import (
     parse_battery_dumpsys, parse_cpu_info, parse_meminfo, 
@@ -12,9 +12,10 @@ logger = get_logger(__name__)
 class ADBCommands:
     """Classe com comandos de alto nível para diagnóstico."""
     
-    def __init__(self, client: ADBClient):
+    def __init__(self, client: Optional[ADBClient] = None):
         """Inicializa os comandos com o cliente ADB."""
-        self.client = client
+        self.client = client or ADBClient()
+
 
     def get_device_info(self, serial: str) -> Dict[str, Any]:
         """Obtém informações do dispositivo."""
